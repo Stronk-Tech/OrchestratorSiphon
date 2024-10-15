@@ -151,7 +151,7 @@ def doWithdrawFees(idx):
         receiver_address = State.orchestrators[idx].source_checksum_address
         if not State.WITHDRAW_TO_RECEIVER:
             Util.log("Withdrawing {0} WEI to {1}".format(transfer_amount, State.orchestrators[idx].source_address))
-        elif State.orchestrators[idx].balance_ETH < ETH_MINVAL:
+        elif State.orchestrators[idx].balance_ETH < State.ETH_MINVAL:
             Util.log("{0} has a balance of {1:.4f} ETH. Withdrawing fees to the Orch wallet to maintain the minimum balance of {2:.4f}".format(State.orchestrators[idx].source_address, State.orchestrators[idx].balance_ETH, State.ETH_MINVAL))
         else:
             receiver_address = State.orchestrators[idx].target_checksum_address_ETH
