@@ -2,7 +2,6 @@
 # These are shared between all libraries and the main script
 from datetime import datetime #< Used to print the current time
 import sys #< Used to flush STDOUT or exit
-import json #< Parse JSON ABI file
 import os #< Check if a filepath is valid
 import web3 #< Handling wallet addresses
 # Import our own libraries
@@ -14,19 +13,6 @@ from lib import State
 def log(info):
     print("[", datetime.now(), "] - ", info)
     sys.stdout.flush()
-
-"""
-@brief Returns a JSON object of ABI data
-@param path: absolute/relative path to an ABI file
-"""
-def getABI(path):
-    try:
-        with open(path) as f:
-            info_json = json.load(f)
-            return info_json["abi"]
-    except Exception as e:
-        log("Fatal error: Unable to extract ABI data: {0}".format(e))
-        sys.exit(1)
 
 """
 @brief Returns a checksum version of a wallet to be used for contract calls

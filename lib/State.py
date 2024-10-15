@@ -2,8 +2,8 @@
 import web3 #< Everything related to the keystore & smart contracts
 import configparser #< Parse the .ini file
 import os #< Used to get environment variables
-# Import our own libraries
-from lib import Util, Contract
+import sys #< To exit the program
+import json #< Parse JSON ABI file
 
 ### Config & Variables
 
@@ -84,8 +84,21 @@ require_user_input = False
 ### Define contracts
 
 
-abi_bonding_manager = Util.getABI("./BondingManagerTarget.json")
-abi_rounds_manager = Util.getABI("./RoundsManagerTarget.json")
+"""
+@brief Returns a JSON object of ABI data
+@param path: absolute/relative path to an ABI file
+"""
+def getABI(path):
+    try:
+        with open(path) as f:
+            info_json = json.load(f)
+            return info_json["abi"]
+    except Exception as e:
+        print("Fatal error: Unable to extract ABI data: {0}".format(e))
+        sys.exit(1)
+
+abi_bonding_manager = getABI("./BondingManagerTarget.json")
+abi_rounds_manager = getABI("./RoundsManagerTarget.json")
 # connect to L2 rpc provider
 provider = web3.HTTPProvider(L2_RPC_PROVIDER)
 w3 = web3.Web3(provider)
@@ -94,91 +107,4 @@ assert w3.is_connected()
 bonding_contract = w3.eth.contract(address=BONDING_CONTRACT_ADDR, abi=abi_bonding_manager)
 rounds_contract = w3.eth.contract(address=ROUNDS_CONTRACT_ADDR, abi=abi_rounds_manager)
 
-
-"""
-@brief Checks all Orchestrators if any cached data needs refreshing or contracts need calling
-"""
-def refreshState():
-    if require_user_input:
-        return
-    # Check for round updates
-    if current_time < previous_round_refresh + WAIT_TIME_ROUND_REFRESH:
-        if current_round_isLocked:
-            Util.log("(cached) Round status: round {0} (locked). Refreshing in {1:.0f} seconds...".format(current_round_num, WAIT_TIME_ROUND_REFRESH - (current_time - previous_round_refresh)))
-        else:
-            Util.log("(cached) Round status: round {0} (unlocked). Refreshing in {1:.0f} seconds...".format(current_round_num, WAIT_TIME_ROUND_REFRESH - (current_time - previous_round_refresh)))
-    else:
-        Contract.refreshRound()
-        Contract.refreshLock()
-
-    # Now check each Orch keystore for expired cached values and do stuff
-    for i in range(len(orchestrators)):
-        Util.log("Refreshing Orchestrator '{0}'".format(orchestrators[i].source_address))
-
-        # First check pending LPT
-        if current_time < orchestrators[i].previous_LPT_refresh + WAIT_TIME_LPT_REFRESH:
-            Util.log("(cached) {0}'s pending stake is {1:.2f} LPT. Refreshing in {2:.0f} seconds...".format(orchestrators[i].source_address, orchestrators[i].balance_LPT_pending, WAIT_TIME_LPT_REFRESH - (current_time - orchestrators[i].previous_LPT_refresh)))
-        else:
-            Contract.refreshStake(i)
-
-        # Transfer pending LPT at the end of round if threshold is reached
-        if orchestrators[i].balance_LPT_pending < LPT_THRESHOLD:
-            Util.log("{0} has {1:.2f} LPT in pending stake < threshold of {2:.2f} LPT".format(orchestrators[i].source_address, orchestrators[i].balance_LPT_pending, LPT_THRESHOLD))
-        else:
-            Util.log("{0} has {1:.2f} LPT pending stake > threshold of {2:.2f} LPT".format(orchestrators[i].source_address, orchestrators[i].balance_LPT_pending, LPT_THRESHOLD))
-            if LPT_MINVAL > orchestrators[i].balance_LPT_pending:
-                Util.log("Cannot transfer LPT, as the minimum value to leave behind is larger than the self-stake")
-            elif current_round_isLocked:
-                Contract.doTransferBond(i)
-                Contract.refreshStake(i)
-            else:
-                Util.log("Waiting for round to be locked before transferring bond")
-
-        # Then check pending ETH balance
-        if current_time < orchestrators[i].previous_ETH_refresh + WAIT_TIME_ETH_REFRESH:
-            Util.log("(cached) {0}'s pending fees is {1:.4f} ETH. Refreshing in {2:.0f} seconds...".format(orchestrators[i].source_address, orchestrators[i].balance_ETH_pending, WAIT_TIME_ETH_REFRESH - (current_time - orchestrators[i].previous_ETH_refresh)))
-        else:
-            Contract.refreshFees(i)
-            Contract.checkEthBalance(i)
-
-        # Withdraw pending ETH if threshold is reached 
-        if orchestrators[i].balance_ETH_pending < ETH_THRESHOLD:
-            Util.log("{0} has {1:.4f} ETH in pending fees < threshold of {2:.4f} ETH".format(orchestrators[i].source_address, orchestrators[i].balance_ETH_pending, ETH_THRESHOLD))
-        else:
-            Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, withdrawing fees...".format(orchestrators[i].source_address, orchestrators[i].balance_ETH_pending, ETH_THRESHOLD))
-            Contract.doWithdrawFees(i)
-            Contract.refreshFees(i)
-            Contract.checkEthBalance(i)
-
-        # Transfer ETH to receiver if threshold is reached
-        if orchestrators[i].balance_ETH < ETH_THRESHOLD:
-            Util.log("{0} has {1:.4f} ETH in their wallet < threshold of {2:.4f} ETH".format(orchestrators[i].source_address, orchestrators[i].balance_ETH, ETH_THRESHOLD))
-        elif ETH_MINVAL > orchestrators[i].balance_ETH:
-            Util.log("Cannot transfer ETH, as the minimum value to leave behind is larger than the balance")
-        else:
-            Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, sending some to {3}...".format(orchestrators[i].source_address, orchestrators[i].balance_ETH, ETH_THRESHOLD, orchestrators[i].target_address_ETH))
-            Contract.doSendFees(i)
-            Contract.checkEthBalance(i)
-
-        # Lastly: check if we need to call reward
-        
-        # We can continue immediately if the latest round has not changed
-        if orchestrators[i].previous_reward_round >= current_round_num:
-            Util.log("Done for '{0}' as they have already called reward this round".format(orchestrators[i].source_address))
-            continue
-
-        # Refresh Orch reward round
-        if current_time < orchestrators[i].previous_round_refresh + WAIT_TIME_ROUND_REFRESH:
-            Util.log("(cached) {0}'s last reward round is {1}. Refreshing in {2:.0f} seconds...".format(orchestrators[i].source_address, orchestrators[i].previous_reward_round, WAIT_TIME_ROUND_REFRESH - (current_time - orchestrators[i].previous_round_refresh)))
-        else:
-            Contract.refreshRewardRound(i)
-
-        # Call reward
-        if orchestrators[i].previous_reward_round < current_round_num:
-            Util.log("Calling reward for {0}...".format(orchestrators[i].source_address))
-            Contract.doCallReward(i)
-            Contract.refreshRewardRound(i)
-            Contract.refreshStake(i)
-        else:
-            Util.log("{0} has already called reward in round {1}".format(orchestrators[i].source_address, current_round_num))
 
