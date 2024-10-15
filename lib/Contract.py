@@ -25,8 +25,8 @@ def refreshRound():
 """
 def refreshLock():
     try:
-        new_lock = State.rounds_contract.functions.current_round_isLocked().call()
-        State.current_round_isLocked = new_lock
+        new_lock = State.rounds_contract.functions.currentRoundLocked().call()
+        State.current_round_is_locked = new_lock
     except Exception as e:
         Util.log("Unable to refresh round lock status: {0}".format(e))
 

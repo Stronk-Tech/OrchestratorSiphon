@@ -1,5 +1,4 @@
 #!/bin/python3
-import web3 #< Everything related to the keystore & smart contracts
 import time #< Used to put the program to sleep to save CPU cycles
 from datetime import datetime, timezone #< Keep track of timers and expiration of cached variables
 import sys #< Used to exit the script
@@ -88,7 +87,7 @@ def refreshState():
         return
     # Check for round updates
     if current_time < State.previous_round_refresh + State.WAIT_TIME_ROUND_REFRESH:
-        if State.current_round_isLocked:
+        if State.current_round_is_locked:
             Util.log("(cached) Round status: round {0} (locked). Refreshing in {1:.0f} seconds...".format(State.current_round_num, State.WAIT_TIME_ROUND_REFRESH - (current_time - State.previous_round_refresh)))
         else:
             Util.log("(cached) Round status: round {0} (unlocked). Refreshing in {1:.0f} seconds...".format(State.current_round_num, State.WAIT_TIME_ROUND_REFRESH - (current_time - State.previous_round_refresh)))
@@ -113,7 +112,7 @@ def refreshState():
             Util.log("{0} has {1:.2f} LPT pending stake > threshold of {2:.2f} LPT".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_LPT_pending, State.LPT_THRESHOLD))
             if State.LPT_MINVAL > State.orchestrators[i].balance_LPT_pending:
                 Util.log("Cannot transfer LPT, as the minimum value to leave behind is larger than the self-stake")
-            elif State.current_round_isLocked:
+            elif State.current_round_is_locked:
                 Contract.doTransferBond(i)
                 Contract.refreshStake(i)
             else:
@@ -136,7 +135,7 @@ def refreshState():
             Contract.checkEthBalance(i)
 
         # Transfer ETH to receiver if threshold is reached
-        if State.orchestrators[i].balance_ETH < ETH_THRESHOLD:
+        if State.orchestrators[i].balance_ETH < State.ETH_THRESHOLD:
             Util.log("{0} has {1:.4f} ETH in their wallet < threshold of {2:.4f} ETH".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH, State.ETH_THRESHOLD))
         elif State.ETH_MINVAL > State.orchestrators[i].balance_ETH:
             Util.log("Cannot transfer ETH, as the minimum value to leave behind is larger than the balance")
