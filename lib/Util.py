@@ -5,6 +5,8 @@ import sys #< Used to flush STDOUT or exit
 import json #< Parse JSON ABI file
 import os #< Check if a filepath is valid
 import web3 #< Handling wallet addresses
+# Import our own libraries
+from lib import State
 
 """
 @brief Logs `info` to the terminal with an attached datetime
@@ -68,16 +70,15 @@ def clearPassword(file_path):
 @param password: the password itself or a absolute/relative path to a text file with the password
 """
 def getPrivateKey(keystore_path, password):
-    global w3
     try:
         with open(keystore_path) as key_file:
             encrypted_key = key_file.read()
             if checkPath(password):
                 with open(password) as password_file:
                     key_password = password_file.read()
-                    return w3.eth.account.decrypt(encrypted_key, key_password.rstrip('\n'))
+                    return State.w3.eth.account.decrypt(encrypted_key, key_password.rstrip('\n'))
             else:
-                return w3.eth.account.decrypt(encrypted_key, password)
+                return State.w3.eth.account.decrypt(encrypted_key, password)
     except Exception as e:
         log("Unable to decrypt key: {0}".format(e))
         return ""

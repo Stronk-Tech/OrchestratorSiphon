@@ -1,5 +1,7 @@
 # All logic related to direct interaction with the user
 # Like asking the user for a password or voting on a proposal
+# Import our own libraries
+from lib import State
 
 """
 @brief Print all user choices
@@ -39,7 +41,6 @@ def getInputAsInt():
 @brief Asks the user for keystore passwords or choose from an option menu
 """
 def handleUserInput():
-    global require_user_input
     # Else continue to menu
     while True:
         printOptions()
@@ -47,7 +48,7 @@ def handleUserInput():
 
         if choice == 0:
             print("Siphoning... 💸")
-            require_user_input = False
+            State.require_user_input = False
             break
         else:
             parseOption(choice)
