@@ -1,8 +1,18 @@
 ﻿# OrchestratorSiphon
 
+In order to protect your Orchestrator keystore file from being compromised, it's vital that no one else ever gets access to it. 
+
+This program provides easy access to just about any action that requires the original Orchestrator keystore. This way you can keep it unlinked from hot wallets and only store the keystore on 1 very secure machine and some (encrypted) backups.
+
+> ⚠️ Do not trust anyone with access to your keystore, not even this script! Please take a look through the python source files to verify what the program does. You can search for `source_private_key` to find all locations where the key is accessed. In case of doubts, stick to the official `go-livepeer` binaries.
+
+## Get started
 Clone repo to your machine: ```git clone https://github.com/stronk-dev/OrchestratorSiphon.git```
 
-Modify the script to use your orchs ETH keystore file: ```nano OrchestratorSiphon/OrchestratorSiphon.py```
+Make sure to modify the config to : ```nano OrchestratorSiphon/config.ini```
+
+> ℹ️ You can also pass any config variable as an environment variable instead. These always take precedence over whatever is in the config.
+> You can set an environment variable with `export CONFIGOPTION='VALUE'` on Linux and `set CONFIGOPTION=VALUE` on Windows. The config file shows the names of all corresponding environment variables.
 
 Dependencies:
 
