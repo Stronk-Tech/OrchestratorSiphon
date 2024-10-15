@@ -60,8 +60,8 @@ else:
                 )
             )
 # Features
-WITHDRAW_TO_RECEIVER = bool(os.getenv('SIPHON_WITHDRAW_TO_RECEIVER', config['features']['withdraw_to_receiver']))
-CLEAR_PASSWORD = bool(os.getenv('SIPHON_CLEAR_PASSWORD', config['features']['clear_password']))
+WITHDRAW_TO_RECEIVER = bool(os.getenv('SIPHON_WITHDRAW_TO_RECEIVER', config.getboolean('features', 'withdraw_to_receiver')))
+CLEAR_PASSWORD = bool(os.getenv('SIPHON_CLEAR_PASSWORD', config.getboolean('features', 'clear_password')))
 # Thresholds
 LPT_THRESHOLD = float(os.getenv('SIPHON_LPT_THRESHOLD', config['thresholds']['lpt_threshold']))
 ETH_THRESHOLD = float(os.getenv('SIPHON_ETH_THRESHOLD', config['thresholds']['eth_threshold']))
