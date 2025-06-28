@@ -87,6 +87,31 @@ def handleCommissionRates():
                 print("UNIMPL: chose {0}".format(choice))
 
 """
+@brief Parse percentage input handling different decimal separators
+@param input_str: string input from user
+@return: float value of the percentage
+"""
+def parsePercentage(input_str):
+    # Remove any whitespace
+    input_str = input_str.strip()
+
+    # Handle common percentage formats for 0-100 range
+    # European: 11,5 -> 11.5
+    # US: 11.5 -> 11.5
+    # Handle cases like "10,50" or "10.50"
+
+    # If there's both comma and dot, it's likely thousands separator + decimal
+    # But since we're dealing with 0-100%, this shouldn't happen in valid input
+    if ',' in input_str and '.' in input_str:
+        raise ValueError("Ambiguous number format")
+
+    # Simple case: replace comma with dot for European decimal separator
+    if ',' in input_str:
+        input_str = input_str.replace(',', '.')
+
+    return float(input_str)
+
+"""
 @brief Handler for setting rates for a specific orchestrator
 """
 def handleSetRates(idx):
@@ -95,24 +120,28 @@ def handleSetRates(idx):
     # Get reward percentage to keep
     while True:
         try:
-            reward_percent = float(input("Enter % of rewards to keep (e.g., 30 for 30%): "))
+            reward_input = input("Enter % of rewards to keep (e.g., 30 or 11.5 for 30% or 11.5%): ").strip()
+            # Handle different number formats
+            reward_percent = parsePercentage(reward_input)
             if 0 <= reward_percent <= 100:
                 break
             else:
                 print("Please enter a percentage between 0 and 100")
         except ValueError:
-            print("Please enter a valid number")
+            print("Please enter a valid number (e.g., 30 or 11.5)")
 
     # Get fee percentage to keep
     while True:
         try:
-            fee_percent = float(input("Enter % of fees to keep (e.g., 30 for 30%): "))
+            fee_input = input("Enter % of fees to keep (e.g., 30 or 11.5 for 30% or 11.5%): ").strip()
+            # Handle different number formats
+            fee_percent = parsePercentage(fee_input)
             if 0 <= fee_percent <= 100:
                 break
             else:
                 print("Please enter a percentage between 0 and 100")
         except ValueError:
-            print("Please enter a valid number")
+            print("Please enter a valid number (e.g., 30 or 11.5)")
 
     # Confirm the transaction
     print("\n{0} will keep {1}% of rewards and {2}% of fees".format(
