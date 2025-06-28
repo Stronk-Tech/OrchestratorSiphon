@@ -258,6 +258,44 @@ def doCallReward(idx):
     except Exception as e:
         Util.log("Unable to call reward: {0}".format(e), 1)
 
+"""
+@brief Sets commission rates as a transcoder
+@param idx: which Orch # in the set to set rates for
+@param reward_percent_to_keep: % of rewards to keep as orchestrator (e.g., 30 for 30%)
+@param fee_percent_to_keep: % of fees to keep as orchestrator (e.g., 30 for 30%)
+"""
+def doTranscoder(idx, reward_percent_to_keep, fee_percent_to_keep):
+    try:
+        # Convert percentages to the format expected by the smart contract
+        # rewardCut: % of rewards orchestrator keeps (multiply by 10000 for precision)
+        reward_cut = int(reward_percent_to_keep * 10000)
+        # feeShare: % of fees that go to delegators (100% - orchestrator's %)
+        fee_share = int((100 - fee_percent_to_keep) * 10000)
+
+        Util.log("Setting transcoder rates for {0}: keeping {1}% of rewards, keeping {2}% of fees".format(
+            State.orchestrators[idx].source_address, reward_percent_to_keep, fee_percent_to_keep), 2)
+        Util.log("Contract parameters: rewardCut={0}, feeShare={1}".format(reward_cut, fee_share), 2)
+
+        # Build transaction info
+        transaction_obj = bonding_contract.functions.transcoder(reward_cut, fee_share).build_transaction(
+            {
+                "from": State.orchestrators[idx].source_checksum_address,
+                'maxFeePerGas': 2000000000,
+                'maxPriorityFeePerGas': 1000000000,
+                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
+            }
+        )
+        # Sign and initiate transaction
+        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
+        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
+        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
+        # Wait for transaction to be confirmed
+        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
+        # Util.log("Completed transaction {0}".format(receipt))
+        Util.log('Transcoder rates set successfully', 2)
+    except Exception as e:
+        Util.log("Unable to set transcoder rates: {0}".format(e), 1)
+
 
 ### Orchestrator ETH logic
 

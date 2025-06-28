@@ -37,7 +37,8 @@ def handleUserInput():
     # Else continue to menu
     while True:
         options = [
-            "1. Treasury proposals"
+            "1. Treasury proposals",
+            "2. Set commission rates"
         ]
         if not State.LOCK_INTERACTIVE:
             options.append("0. Start siphoning. Press `CTRL + z`or `CTRL + \\` if you want to switch back to interactive mode")
@@ -53,9 +54,79 @@ def handleUserInput():
         else:
             if choice == 1:
                 handleTreasury()
+            elif choice == 2:
+                handleCommissionRates()
             else:
                 print("UNIMPL: chose {0}".format(choice))
     
+
+### Commission rates
+
+
+"""
+@brief Handler for setting commission rates
+"""
+def handleCommissionRates():
+    while True:
+        options = []
+        for orchIdx in range(len(State.orchestrators)):
+            options.append("{0}. Set rates for {1}".format(orchIdx + 1, State.orchestrators[orchIdx].source_address))
+        options.append("0. Back to menu")
+        printOptions(options)
+        choice = getInputAsInt()
+
+        if choice == 0:
+            return
+        elif choice == -1:
+            continue
+        else:
+            orchIdx = choice - 1
+            if orchIdx < len(State.orchestrators):
+                handleSetRates(orchIdx)
+            else:
+                print("UNIMPL: chose {0}".format(choice))
+
+"""
+@brief Handler for setting rates for a specific orchestrator
+"""
+def handleSetRates(idx):
+    print("Setting commission rates for {0}".format(State.orchestrators[idx].source_address))
+
+    # Get reward percentage to keep
+    while True:
+        try:
+            reward_percent = float(input("Enter % of rewards to keep (e.g., 30 for 30%): "))
+            if 0 <= reward_percent <= 100:
+                break
+            else:
+                print("Please enter a percentage between 0 and 100")
+        except ValueError:
+            print("Please enter a valid number")
+
+    # Get fee percentage to keep
+    while True:
+        try:
+            fee_percent = float(input("Enter % of fees to keep (e.g., 30 for 30%): "))
+            if 0 <= fee_percent <= 100:
+                break
+            else:
+                print("Please enter a percentage between 0 and 100")
+        except ValueError:
+            print("Please enter a valid number")
+
+    # Confirm the transaction
+    print("\n{0} will keep {1}% of rewards and {2}% of fees".format(
+        State.orchestrators[idx].source_address, reward_percent, fee_percent))
+    print("This means delegators will receive {0}% of rewards and {1}% of fees".format(
+        100 - reward_percent, 100 - fee_percent))
+    print("Enter 1 to confirm. Enter anything else to abort.")
+
+    confirmChoice = getInputAsInt()
+    if confirmChoice == 1:
+        Contract.doTranscoder(idx, reward_percent, fee_percent)
+    else:
+        print("Transaction aborted")
+
 
 ### Treasury proposals
 
