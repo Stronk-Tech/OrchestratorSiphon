@@ -14,13 +14,60 @@ Make sure to modify the config to : ```nano OrchestratorSiphon/config.ini```
 > ℹ️ You can also pass any config variable as an environment variable instead. These always take precedence over whatever is in the config.
 > You can set an environment variable with `export CONFIGOPTION='VALUE'` on Linux and `set CONFIGOPTION=VALUE` on Windows. The config file shows the names of all corresponding environment variables.
 
-Dependencies:
+## Dependencies
+
+Choose the install path that matches your host. If you ever see the warning 
 
 ```
-pip install web3
-pip install eth-utils
-pip install setuptools
+RequestsDependencyWarning: urllib3 (2.4.0) or chardet (4.0.0) doesn't match a supported version!
 ```
+
+use the commands below for your setup to check and refresh the dependency versions.
+
+### Virtualenv (recommended)
+
+```
+cd OrchestratorSiphon
+python3 -m venv .venv
+source .venv/bin/activate
+pip install web3 eth-utils setuptools
+```
+
+To troubleshoot the warning inside this environment:
+
+```
+pip show web3 requests urllib3
+pip install --upgrade "requests>=2.31" "urllib3>=2.0" web3
+```
+
+When running manually or via `systemd`, point to `.venv/bin/python3` (e.g. `ExecStart=/path/to/OrchestratorSiphon/.venv/bin/python3 -u ...`).
+
+### System interpreter with pip (`--user`)
+
+```
+python3 -m pip install --user web3 eth-utils setuptools
+```
+
+If the warning appears:
+
+```
+python3 -m pip show web3 requests urllib3
+python3 -m pip install --user --upgrade "requests>=2.31" "urllib3>=2.0" web3
+```
+
+On Ubuntu 24.04+ you can replace `--user` with `--break-system-packages` when the service runs under a dedicated user.
+
+### System interpreter with distro packages (apt-managed)
+
+If you prefer to keep `requests`/`urllib3` on the distro-supported versions, or need to roll back after a pip upgrade, run:
+
+```
+sudo python3 -m pip uninstall urllib3
+sudo python3 -m pip uninstall requests
+sudo apt-get install --reinstall python3-urllib3 python3-requests
+```
+
+After reinstalling, either stay on the distro combo or move the rest of the Python stack into a virtualenv to avoid future mismatches. Always rerun `python3 -m pip show web3 requests urllib3` (or the virtualenv equivalent) to confirm versions, then restart `orchSiphon.service` so systemd picks up the new environment.
 
 Run the script manually to test if it works:
 ```
@@ -69,26 +116,6 @@ systemctl enable --now orchSiphon.service
 ```
 
 Check logs: ```journalctl -u orchSiphon.service -n 500 -f```
-
-## Arch Linux (or other venv)
-
-For operatins systems like Arch linux, enter the repository and create a new virtual environment:
-
-```
-cd OrchestratorSiphon
-python -m venv .
-```
-
-Install depedencies:
-```
-bin/pip install web3
-bin/pip install setuptools
-bin/pip install eth-utils
-```
-
-Don't forget to use the python binary from the virtual environment when running the script: ```bin/python3 OrchestratorSiphon.py```
-
-For the `systemd` script this means changing ExecStart to `ExecStart=/path/to/OrchestratorSiphon/bin/python3 -u /path/to/OrchestratorSiphon/OrchestratorSiphon.py`
 
 # Interactive mode
 
