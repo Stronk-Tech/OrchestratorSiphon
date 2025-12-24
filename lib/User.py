@@ -255,6 +255,10 @@ def handleProposal(proposals, proposalIdx):
 def handleTreasury():
     proposals = Contract.getProposals()
 
+    if not proposals:
+        print("\nNo active proposals found.")
+        return
+
     while True:
         options = []
         for idx, proposal in enumerate(proposals):
