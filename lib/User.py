@@ -38,7 +38,8 @@ def handleUserInput():
     while True:
         options = [
             "1. Treasury proposals",
-            "2. Set commission rates"
+            "2. Governance proposals (LIP)",
+            "3. Set commission rates"
         ]
         if not State.LOCK_INTERACTIVE:
             options.append("0. Start siphoning. Press `CTRL + z`or `CTRL + \\` if you want to switch back to interactive mode")
@@ -55,6 +56,8 @@ def handleUserInput():
             if choice == 1:
                 handleTreasury()
             elif choice == 2:
+                handleGovernance()
+            elif choice == 3:
                 handleCommissionRates()
             else:
                 print("UNIMPL: chose {0}".format(choice))
@@ -275,5 +278,98 @@ def handleTreasury():
             proposalIdx = choice - 1
             if proposalIdx < len(proposals):
                 handleProposal(proposals, proposalIdx)
+            else:
+                print("UNIMPL: chose {0}".format(choice))
+
+
+### LIP Governance Polls
+
+
+"""
+@brief Handler for voting on a LIP poll
+"""
+def handlePollVote(idx, pollAddress):
+    while True:
+        print("{0} wants to vote on poll".format(State.orchestrators[idx].source_address))
+        options = ["1. Vote YES", "2. Vote NO", "0. Back to wallet selection"]
+        printOptions(options)
+        voteChoice = getInputAsInt()
+        if voteChoice == 0:
+            return
+        elif voteChoice == -1:
+            continue
+        elif voteChoice in [1, 2]:
+            choiceId = 0 if voteChoice == 1 else 1  # 0=Yes, 1=No
+            choiceName = "YES" if choiceId == 0 else "NO"
+            print("{0} is about to vote {1} on this poll".format(
+                State.orchestrators[idx].source_address, choiceName))
+            print("Enter 1 to confirm. Enter anything else to abort.")
+            confirmChoice = getInputAsInt()
+            if confirmChoice == 1:
+                Contract.doCastPollVote(idx, pollAddress, choiceId)
+            return
+        else:
+            print("UNIMPL: chose {0}".format(voteChoice))
+
+"""
+@brief Handler for choosing a wallet to vote on a poll
+"""
+def handlePoll(polls, pollIdx):
+    poll = polls[pollIdx]
+    while True:
+        options = []
+        for orchIdx in range(len(State.orchestrators)):
+            hasVoted, choiceId = Contract.getVoteStatus(poll["pollAddress"], State.orchestrators[orchIdx].source_checksum_address)
+            if hasVoted:
+                voteName = "YES" if choiceId == 0 else "NO"
+                options.append("{0}. {1} - Voted {2}".format(orchIdx + 1, State.orchestrators[orchIdx].source_address, voteName))
+            else:
+                options.append("{0}. {1} - Can vote".format(orchIdx + 1, State.orchestrators[orchIdx].source_address))
+        options.append("0. Back to polls")
+        printOptions(options)
+        choice = getInputAsInt()
+        if choice == 0:
+            return
+        elif choice == -1:
+            continue
+        else:
+            orchIdx = choice - 1
+            if orchIdx < len(State.orchestrators):
+                hasVoted, _ = Contract.getVoteStatus(poll["pollAddress"], State.orchestrators[orchIdx].source_checksum_address)
+                if hasVoted:
+                    print("{0} has already voted on this poll".format(State.orchestrators[orchIdx].source_address))
+                else:
+                    handlePollVote(orchIdx, poll["pollAddress"])
+            else:
+                print("UNIMPL: chose {0}".format(choice))
+
+"""
+@brief Handler for choosing a LIP governance poll
+"""
+def handleGovernance():
+    polls = Contract.getPolls()
+
+    if not polls:
+        print("\nNo LIP polls found.")
+        return
+
+    while True:
+        options = []
+        for idx, poll in enumerate(polls):
+            addr = poll["pollAddress"]
+            shortAddr = addr[:6] + "..." + addr[-4:]
+            options.append("{0}. Poll {1}".format(idx + 1, shortAddr))
+        options.append("0. Back to menu")
+        printOptions(options)
+        choice = getInputAsInt()
+
+        if choice == 0:
+            break
+        elif choice == -1:
+            continue
+        else:
+            pollIdx = choice - 1
+            if pollIdx < len(polls):
+                handlePoll(polls, pollIdx)
             else:
                 print("UNIMPL: chose {0}".format(choice))

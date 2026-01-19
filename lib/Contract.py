@@ -13,6 +13,7 @@ from lib import Util, State
 BONDING_CONTRACT_ADDR = '0x35Bcf3c30594191d53231E4FF333E8A770453e40'
 ROUNDS_CONTRACT_ADDR = '0xdd6f56DcC28D3F5f27084381fE8Df634985cc39f'
 GOVERNOR_CONTRACT_ADDR = '0xcFE4E2879B786C3aa075813F0E364bb5acCb6aa0'
+POLL_CREATOR_ADDR = '0x8bb50806D60c492c0004DAD5D9627DAA2d9732E6'
 
 # Proposal states (OpenZeppelin IGovernor)
 PROPOSAL_STATE_PENDING = 0
@@ -55,6 +56,8 @@ def getABI(path):
 abi_bonding_manager = getABI(State.SIPHON_ROOT + "/contracts/BondingManager.json")
 abi_rounds_manager = getABI(State.SIPHON_ROOT + "/contracts/RoundsManager.json")
 treasury_manager = getABI(State.SIPHON_ROOT + "/contracts/LivepeerGovernor.json")
+poll_creator_abi = getABI(State.SIPHON_ROOT + "/contracts/PollCreator.json")
+poll_abi = getABI(State.SIPHON_ROOT + "/contracts/Poll.json")
 # connect to L2 rpc provider
 provider = web3.HTTPProvider(State.L2_RPC_PROVIDER)
 w3 = web3.Web3(provider)
@@ -63,6 +66,7 @@ assert w3.is_connected()
 bonding_contract = w3.eth.contract(address=BONDING_CONTRACT_ADDR, abi=abi_bonding_manager)
 rounds_contract = w3.eth.contract(address=ROUNDS_CONTRACT_ADDR, abi=abi_rounds_manager)
 treasury_contract = w3.eth.contract(address=GOVERNOR_CONTRACT_ADDR, abi=treasury_manager)
+poll_creator_contract = w3.eth.contract(address=POLL_CREATOR_ADDR, abi=poll_creator_abi)
 
 
 ### Governance & Treasury logic
@@ -328,6 +332,98 @@ def doCastVoteWithReason(idx, proposalId, value, reason):
         Util.log('Voted successfully', 2)
     except Exception as e:
         Util.log("Unable to vote: '{0}'".format(e), 1)
+
+
+### LIP Governance Polls
+
+
+def getPollWindow():
+    """Get the block range where open polls can exist based on POLL_PERIOD."""
+    try:
+        poll_period_l1 = poll_creator_contract.functions.POLL_PERIOD().call()
+        # Convert L1 blocks to L2 blocks (L1 ~12s, L2 ~0.25s)
+        l1_to_l2_ratio = 48
+        poll_period_l2 = poll_period_l1 * l1_to_l2_ratio
+        buffer_blocks = 50000
+        Util.log("Poll period: {0} L1 blocks = {1} L2 blocks".format(poll_period_l1, poll_period_l2), 2)
+        return poll_period_l2 + buffer_blocks
+    except Exception as e:
+        Util.log("Could not get poll period: {0}".format(e), 1)
+        # Fallback: ~10 days on Arbitrum at 0.25s/block
+        return 3_500_000
+
+def getPolls():
+    """Returns all LIP governance polls within the search window."""
+    try:
+        current_block = w3.eth.block_number
+        poll_window = getPollWindow()
+        from_block = max(0, current_block - poll_window)
+
+        Util.log("Searching for LIP polls from block {0} to {1}".format(from_block, current_block), 2)
+
+        raw_polls = getLogsInChunks(
+            poll_creator_contract.events.PollCreated(),
+            from_block,
+            current_block
+        )
+
+        if not raw_polls:
+            Util.log("No polls found in search range", 2)
+            return []
+
+        Util.log("Found {0} polls".format(len(raw_polls)), 2)
+        polls = []
+        for poll in raw_polls:
+            poll_address = poll.args.poll
+            end_block = poll.args.endBlock
+            polls.append({
+                "pollAddress": poll_address,
+                "endBlock": end_block,
+                "proposal": poll.args.proposal.hex() if isinstance(poll.args.proposal, bytes) else poll.args.proposal
+            })
+
+        return polls
+    except Exception as e:
+        Util.log("Unable to retrieve LIP polls: {0}".format(e), 1)
+        return []
+
+def getVoteStatus(pollAddress, voterAddress):
+    """Check if wallet voted on poll. Returns (hasVoted, choiceId) where 0=Yes, 1=No."""
+    try:
+        poll_contract = w3.eth.contract(address=pollAddress, abi=poll_abi)
+        current_block = w3.eth.block_number
+        poll_window = getPollWindow()
+        from_block = max(0, current_block - poll_window)
+        votes = poll_contract.events.Vote.get_logs(
+            from_block=from_block,
+            argument_filters={'voter': voterAddress}
+        )
+        if votes:
+            return (True, votes[-1].args.choiceID)
+        return (False, None)
+    except Exception as e:
+        Util.log("Unable to check poll vote status: '{0}'".format(e), 1)
+        return (False, None)
+
+def doCastPollVote(idx, pollAddress, choiceId):
+    """Cast vote on LIP poll. choiceId: 0=Yes, 1=No."""
+    try:
+        poll_contract = w3.eth.contract(address=pollAddress, abi=poll_abi)
+        transaction_obj = poll_contract.functions.vote(choiceId).build_transaction(
+            {
+                "from": State.orchestrators[idx].source_checksum_address,
+                'maxFeePerGas': 2000000000,
+                'maxPriorityFeePerGas': 1000000000,
+                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
+            }
+        )
+        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
+        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
+        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
+        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
+        Util.log('Poll vote cast successfully', 2)
+    except Exception as e:
+        Util.log("Unable to vote on poll: '{0}'".format(e), 1)
 
 
 ### Round refresh logic
