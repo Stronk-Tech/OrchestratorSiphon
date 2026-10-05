@@ -69,6 +69,23 @@ treasury_contract = w3.eth.contract(address=GOVERNOR_CONTRACT_ADDR, abi=treasury
 poll_creator_contract = w3.eth.contract(address=POLL_CREATOR_ADDR, abi=poll_creator_abi)
 
 
+"""
+@brief Returns explicit EIP-1559 fees for transaction construction
+@return Dict with maxFeePerGas and maxPriorityFeePerGas
+@note Arbitrum One collects priority tips under PGA ordering, so the
+previous hardcoded 1 gwei tip is now charged on every transaction while a
+zero tip is still included via the protocol ordering boost. The cap is
+twice the latest block base fee, refreshed from chain on every call, so
+retries recompute instead of reusing stale fees. Integer wei arithmetic.
+"""
+def getTransactionFees():
+    base_fee = int(w3.eth.get_block('latest').baseFeePerGas)
+    return {
+        'maxFeePerGas': base_fee * 2,
+        'maxPriorityFeePerGas': 0
+    }
+
+
 ### Governance & Treasury logic
 
 
@@ -292,8 +309,7 @@ def doCastVote(idx, proposalId, value):
         transaction_obj = treasury_contract.functions.castVote(proposalId, value).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -317,8 +333,7 @@ def doCastVoteWithReason(idx, proposalId, value, reason):
         transaction_obj = treasury_contract.functions.castVoteWithReason(proposalId, value, reason).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -412,8 +427,7 @@ def doCastPollVote(idx, pollAddress, choiceId):
         transaction_obj = poll_contract.functions.vote(choiceId).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -501,8 +515,7 @@ def doTransferBond(idx):
             web3.constants.ADDRESS_ZERO).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -528,8 +541,7 @@ def doCallReward(idx):
         transaction_obj = bonding_contract.functions.reward().build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -566,8 +578,7 @@ def doTranscoder(idx, reward_percent_to_keep, fee_percent_to_keep):
         transaction_obj = bonding_contract.functions.transcoder(reward_cut, fee_share).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -620,8 +631,7 @@ def doWithdrawFees(idx):
         transaction_obj = bonding_contract.functions.withdrawFees(receiver_address, transfer_amount).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **getTransactionFees(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -666,8 +676,7 @@ def doSendFees(idx):
             'value': transfer_amount,
             "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address),
             'gas': 300000,
-            'maxFeePerGas': 2000000000,
-            'maxPriorityFeePerGas': 1000000000,
+            **getTransactionFees(),
             'chainId': 42161
         }
 
