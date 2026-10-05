@@ -132,11 +132,19 @@ def refreshState():
             Util.log("{0} has {1:.2f} LPT pending stake > threshold of {2:.2f} LPT".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_LPT_pending, State.LPT_THRESHOLD), 2)
             if State.LPT_MINVAL > State.orchestrators[i].balance_LPT_pending:
                 Util.log("Cannot transfer LPT, as the minimum value to leave behind is larger than the self-stake", 1)
-            elif State.current_round_is_locked:
-                Contract.doTransferBond(i)
-                Contract.refreshStake(i)
             else:
-                Util.log("Waiting for round to be locked before transferring bond", 2)
+                # Never trust cached round/lock state for a transfer: the stake threshold is usually
+                # crossed *because* reward() landed in a new round, so refresh both live before acting
+                round_before = State.current_round_num
+                Contract.refreshRound()
+                Contract.refreshLock()
+                if State.current_round_num != round_before:
+                    Util.log("Round advanced from {0} to {1} since last check, not transferring bond this tick".format(round_before, State.current_round_num), 2)
+                elif State.current_round_is_locked:
+                    Contract.doTransferBond(i)
+                    Contract.refreshStake(i)
+                else:
+                    Util.log("Waiting for round to be locked before transferring bond", 2)
 
         # Then check pending ETH balance
         if current_time < State.orchestrators[i].previous_ETH_refresh + State.WAIT_TIME_ETH_REFRESH:
@@ -149,10 +157,17 @@ def refreshState():
         if State.orchestrators[i].balance_ETH_pending < State.ETH_THRESHOLD:
             Util.log("{0} has {1:.4f} ETH in pending fees < threshold of {2:.4f} ETH".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 3)
         else:
-            Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, withdrawing fees...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 2)
-            Contract.doWithdrawFees(i)
-            Contract.refreshFees(i)
-            Contract.checkEthBalance(i)
+            # pendingFees() includes commission earned in the current round, but BondingManager only lets
+            # you withdraw fees up to lastClaimRound. If we've already claimed this round (reward() or a
+            # previous withdraw did it), the remainder isn't withdrawable until the next round - don't spam.
+            last_claim_round = Contract.getLastClaimRound(i)
+            if last_claim_round is not None and last_claim_round >= State.current_round_num:
+                Util.log("{0} has {1:.4f} ETH pending fees > threshold, but already claimed in round {2}; withdrawable from round {3}".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, last_claim_round, last_claim_round + 1), 2)
+            else:
+                Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, withdrawing fees...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 2)
+                Contract.doWithdrawFees(i)
+                Contract.refreshFees(i)
+                Contract.checkEthBalance(i)
 
         # Transfer ETH to receiver if threshold is reached
         if State.orchestrators[i].balance_ETH < State.ETH_THRESHOLD:

@@ -61,6 +61,27 @@ poll_abi = getABI(State.SIPHON_ROOT + "/contracts/Poll.json")
 # connect to L2 rpc provider
 provider = web3.HTTPProvider(State.L2_RPC_PROVIDER)
 w3 = web3.Web3(provider)
+
+
+# Arbitrum base fee sits on a ~0.02 gwei floor and the sequencer is first-come-first-served, so a tip
+# buys nothing. Price every tx off the live base fee: 2x headroom so a mild spike between build and
+# inclusion can't strand it, hard cap so we never pay more than the original 1 gwei settings.
+GAS_HEADROOM = 2
+GAS_CAP_WEI = 1000000000
+GAS_FALLBACK_WEI = 100000000
+
+def gasParams():
+    try:
+        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+        max_fee = min(base_fee * GAS_HEADROOM, GAS_CAP_WEI)
+        if base_fee >= GAS_CAP_WEI:
+            Util.log("Base fee {0:.4f} gwei is at/above cap {1:.4f} gwei, tx may wait for inclusion".format(base_fee / 1e9, GAS_CAP_WEI / 1e9), 2)
+        else:
+            Util.log("Base fee {0:.4f} gwei, using maxFeePerGas {1:.4f} gwei, no tip".format(base_fee / 1e9, max_fee / 1e9), 2)
+    except Exception as e:
+        max_fee = GAS_FALLBACK_WEI
+        Util.log("Unable to read base fee, using fallback {0:.4f} gwei: {1}".format(max_fee / 1e9, e), 2)
+    return {'maxFeePerGas': max_fee, 'maxPriorityFeePerGas': 0}
 assert w3.is_connected()
 # prepare contracts
 bonding_contract = w3.eth.contract(address=BONDING_CONTRACT_ADDR, abi=abi_bonding_manager)
@@ -292,8 +313,7 @@ def doCastVote(idx, proposalId, value):
         transaction_obj = treasury_contract.functions.castVote(proposalId, value).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -317,8 +337,7 @@ def doCastVoteWithReason(idx, proposalId, value, reason):
         transaction_obj = treasury_contract.functions.castVoteWithReason(proposalId, value, reason).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -412,8 +431,7 @@ def doCastPollVote(idx, pollAddress, choiceId):
         transaction_obj = poll_contract.functions.vote(choiceId).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -450,6 +468,8 @@ def refreshLock():
         Util.log("Current round lock status is {0}".format(new_lock), 2)
         State.current_round_is_locked = new_lock
     except Exception as e:
+        # Fail safe: if we can't read lock status, assume unlocked so we never transfer on stale data
+        State.current_round_is_locked = False
         Util.log("Unable to refresh round lock status: {0}".format(e), 1)
 
 """
@@ -501,8 +521,7 @@ def doTransferBond(idx):
             web3.constants.ADDRESS_ZERO).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -528,8 +547,7 @@ def doCallReward(idx):
         transaction_obj = bonding_contract.functions.reward().build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -566,8 +584,7 @@ def doTranscoder(idx, reward_percent_to_keep, fee_percent_to_keep):
         transaction_obj = bonding_contract.functions.transcoder(reward_cut, fee_share).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -601,6 +618,18 @@ def refreshFees(idx):
         Util.log("Unable to refresh fees: '{0}'".format(e), 1)
 
 """
+@brief Returns the delegator's lastClaimRound (fees are only withdrawable up to this round), or None on RPC error
+@param idx: which Orch # in the set to check
+"""
+def getLastClaimRound(idx):
+    try:
+        # getDelegator returns [bondedAmount, fees, delegateAddress, delegatedAmount, startRound, lastClaimRound, nextUnbondingLockId]
+        return bonding_contract.functions.getDelegator(State.orchestrators[idx].source_checksum_address).call()[5]
+    except Exception as e:
+        Util.log("Unable to read lastClaimRound: {0}".format(e), 1)
+        return None
+
+"""
 @brief Withdraws all fees to the receiver wallet
 @param idx: which Orch # in the send from
 """
@@ -620,8 +649,7 @@ def doWithdrawFees(idx):
         transaction_obj = bonding_contract.functions.withdrawFees(receiver_address, transfer_amount).build_transaction(
             {
                 "from": State.orchestrators[idx].source_checksum_address,
-                'maxFeePerGas': 2000000000,
-                'maxPriorityFeePerGas': 1000000000,
+                **gasParams(),
                 "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
             }
         )
@@ -666,8 +694,7 @@ def doSendFees(idx):
             'value': transfer_amount,
             "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address),
             'gas': 300000,
-            'maxFeePerGas': 2000000000,
-            'maxPriorityFeePerGas': 1000000000,
+            **gasParams(),
             'chainId': 42161
         }
 
