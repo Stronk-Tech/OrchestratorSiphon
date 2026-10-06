@@ -95,6 +95,34 @@ def gasParams():
         Util.log("Unable to read base fee, using fallback {0:.4f} gwei: {1}".format(max_fee / 1e9, e), 1)
     return {'maxFeePerGas': max_fee, 'maxPriorityFeePerGas': 0}
 
+"""
+@brief Builds, signs and sends a transaction from the Orch, then waits for it to be confirmed
+@param idx: which Orch # in the set sends the transaction
+@param tx: a contract function call to build the transaction from, or a dict with the fields of a plain transaction
+@return the transaction receipt. Raises an exception if the transaction reverted
+"""
+def sendTx(idx, tx):
+    sender = State.orchestrators[idx].source_checksum_address
+    tx_params = {
+        "from": sender,
+        **gasParams(),
+        "nonce": w3.eth.get_transaction_count(sender)
+    }
+    if isinstance(tx, dict):
+        transaction_obj = {**tx, **tx_params}
+    else:
+        transaction_obj = tx.build_transaction(tx_params)
+    # Sign and initiate transaction
+    signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
+    transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
+    Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
+    # Wait for transaction to be confirmed
+    receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
+    # A mined transaction can still have reverted, which wait_for_transaction_receipt does not raise on
+    if receipt['status'] != 1:
+        raise Exception("transaction {0} reverted on-chain".format(transaction_hash.hex()))
+    return receipt
+
 
 ### Governance & Treasury logic
 
@@ -315,21 +343,8 @@ def hasVoted(proposalId, address):
 """
 def doCastVote(idx, proposalId, value):
     try:
-        # Build transaction info
-        transaction_obj = treasury_contract.functions.castVote(proposalId, value).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, treasury_contract.functions.castVote(proposalId, value))
         Util.log('Voted successfully', 2)
     except Exception as e:
         Util.log("Unable to vote: '{0}'".format(e), 1)
@@ -339,21 +354,8 @@ def doCastVote(idx, proposalId, value):
 """
 def doCastVoteWithReason(idx, proposalId, value, reason):
     try:
-        # Build transaction info
-        transaction_obj = treasury_contract.functions.castVoteWithReason(proposalId, value, reason).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, treasury_contract.functions.castVoteWithReason(proposalId, value, reason))
         Util.log('Voted successfully', 2)
     except Exception as e:
         Util.log("Unable to vote: '{0}'".format(e), 1)
@@ -434,17 +436,8 @@ def doCastPollVote(idx, pollAddress, choiceId):
     """Cast vote on LIP poll. choiceId: 0=Yes, 1=No."""
     try:
         poll_contract = w3.eth.contract(address=pollAddress, abi=poll_abi)
-        transaction_obj = poll_contract.functions.vote(choiceId).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, poll_contract.functions.vote(choiceId))
         Util.log('Poll vote cast successfully', 2)
     except Exception as e:
         Util.log("Unable to vote on poll: '{0}'".format(e), 1)
@@ -521,23 +514,10 @@ def doTransferBond(idx):
     try:
         transfer_amount = web3.Web3.to_wei(float(State.orchestrators[idx].balance_LPT_pending) - State.LPT_MINVAL, 'ether')
         Util.log("Going to transfer {0} LPTU bond to {1}".format(transfer_amount, State.orchestrators[idx].receiver_address_LPT), 2)
-        # Build transaction info
-        transaction_obj = bonding_contract.functions.transferBond(State.orchestrators[idx].receiver_checksum_address_LPT, transfer_amount,
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, bonding_contract.functions.transferBond(State.orchestrators[idx].receiver_checksum_address_LPT, transfer_amount,
             web3.constants.ADDRESS_ZERO, web3.constants.ADDRESS_ZERO, web3.constants.ADDRESS_ZERO,
-            web3.constants.ADDRESS_ZERO).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+            web3.constants.ADDRESS_ZERO))
         Util.log('Transfer bond success.', 2)
     except Exception as e:
         Util.log("Unable to transfer bond: {0}".format(e), 1)
@@ -549,21 +529,8 @@ def doTransferBond(idx):
 def doCallReward(idx):
     try:
         Util.log("Calling reward for {0}".format(State.orchestrators[idx].source_address), 2)
-        # Build transaction info
-        transaction_obj = bonding_contract.functions.reward().build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, bonding_contract.functions.reward())
         Util.log('Call to reward success.', 2)
     except Exception as e:
         Util.log("Unable to call reward: {0}".format(e), 1)
@@ -586,21 +553,8 @@ def doTranscoder(idx, reward_percent_to_keep, fee_percent_to_keep):
             State.orchestrators[idx].source_address, reward_percent_to_keep, fee_percent_to_keep), 2)
         Util.log("Contract parameters: rewardCut={0}, feeShare={1}".format(reward_cut, fee_share), 2)
 
-        # Build transaction info
-        transaction_obj = bonding_contract.functions.transcoder(reward_cut, fee_share).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, bonding_contract.functions.transcoder(reward_cut, fee_share))
         Util.log('Transcoder rates set successfully', 2)
     except Exception as e:
         Util.log("Unable to set transcoder rates: {0}".format(e), 1)
@@ -651,21 +605,8 @@ def doWithdrawFees(idx):
         else:
             receiver_address = State.orchestrators[idx].target_checksum_address_ETH
             Util.log("Withdrawing {0} WEI directly to receiver wallet {1}".format(transfer_amount, State.orchestrators[idx].target_address_ETH), 2)
-        # Build transaction info
-        transaction_obj = bonding_contract.functions.withdrawFees(receiver_address, transfer_amount).build_transaction(
-            {
-                "from": State.orchestrators[idx].source_checksum_address,
-                **gasParams(),
-                "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address)
-            }
-        )
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, bonding_contract.functions.withdrawFees(receiver_address, transfer_amount))
         Util.log('Withdraw fees success.', 2)
     except Exception as e:
         Util.log("Unable to withdraw fees: '{0}'".format(e), 1)
@@ -693,24 +634,13 @@ def doSendFees(idx):
     try:
         transfer_amount = web3.Web3.to_wei(float(State.orchestrators[idx].balance_ETH) - State.ETH_MINVAL, 'ether')
         Util.log("Should transfer {0} wei to {1}".format(transfer_amount, State.orchestrators[idx].target_checksum_address_ETH), 2)
-        # Build transaction info
-        transaction_obj = {
-            'from': State.orchestrators[idx].source_checksum_address,
+        # Build, sign and send the transaction, then wait for it to be confirmed
+        sendTx(idx, {
             'to': State.orchestrators[idx].target_checksum_address_ETH,
             'value': transfer_amount,
-            "nonce": w3.eth.get_transaction_count(State.orchestrators[idx].source_checksum_address),
             'gas': 300000,
-            **gasParams(),
             'chainId': 42161
-        }
-
-        # Sign and initiate transaction
-        signed_transaction = w3.eth.account.sign_transaction(transaction_obj, State.orchestrators[idx].source_private_key)
-        transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
-        Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
-        # Wait for transaction to be confirmed
-        receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-        # Util.log("Completed transaction {0}".format(receipt))
+        })
         Util.log('Transfer ETH success.', 2)
     except Exception as e:
         Util.log("Unable to send ETH: {0}".format(e), 1)

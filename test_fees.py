@@ -23,8 +23,10 @@ HIST_BASE_FEE = 20_016_000
 
 
 class CannedArbitrum(BaseProvider):
-    def __init__(self, base_fees, priority_hint=1_000_000_000, fail_blocks=False):
+    def __init__(self, base_fees, priority_hint=1_000_000_000, fail_blocks=False, receipt_status=1):
         super().__init__()
+        self.receipt_status = receipt_status
+        self.sent = []
         self.base_fees = list(base_fees)
         self.calls = []
         self.priority_hint = priority_hint
@@ -59,6 +61,26 @@ class CannedArbitrum(BaseProvider):
         if method == "eth_maxPriorityFeePerGas":
             return {"jsonrpc": "2.0", "id": 1,
                     "result": hex(self.priority_hint)}
+        if method == "eth_sendRawTransaction":
+            self.sent.append(params[0])
+            return {"jsonrpc": "2.0", "id": 1, "result": "0x" + "ee" * 32}
+        if method == "eth_getTransactionReceipt":
+            return {"jsonrpc": "2.0", "id": 1, "result": {
+                "transactionHash": "0x" + "ee" * 32,
+                "blockNumber": "0x1e811997",
+                "blockHash": "0x" + "ab" * 32,
+                "status": hex(self.receipt_status),
+                "gasUsed": hex(600_000),
+                "cumulativeGasUsed": hex(600_000),
+                "effectiveGasPrice": hex(LIVE_BASE_FEE),
+                "logs": [],
+                "logsBloom": "0x" + "00" * 256,
+                "transactionIndex": "0x1",
+                "from": SYNTHETIC_FROM,
+                "to": SYNTHETIC_FROM,
+                "contractAddress": None,
+                "type": "0x2",
+            }}
         raise AssertionError("unexpected RPC call: %r" % (method,))
 
 
@@ -170,6 +192,66 @@ class GasTests(unittest.TestCase):
         self.assertNotIn("'maxFeePerGas': 2000000000", text)
         self.assertNotIn("'maxPriorityFeePerGas': 1000000000", text)
         self.assertEqual(text.count("maxPriorityFeePerGas"), 1)
+
+
+
+class SendTxTests(unittest.TestCase):
+    """sendTx() against the canned chain: signs locally with a throwaway key, 'broadcasts' to the stub only"""
+
+    @classmethod
+    def setUpClass(cls):
+        from eth_account import Account
+        cls.contract = load_contract_module()
+        cls.orig_w3 = cls.contract.w3
+        account = Account.from_key("0x" + "22" * 32)
+
+        class FakeOrch:
+            source_checksum_address = account.address
+            source_private_key = account.key
+        cls.orch = FakeOrch()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.contract.w3 = cls.orig_w3
+
+    def setUp(self):
+        self.orig_orchs = list(self.contract.State.orchestrators)
+        self.contract.State.orchestrators[:] = [self.orch]
+
+    def tearDown(self):
+        self.contract.State.orchestrators[:] = self.orig_orchs
+
+    def canned(self, **kwargs):
+        provider = CannedArbitrum([LIVE_BASE_FEE], **kwargs)
+        self.contract.w3 = Web3(provider)
+        return provider
+
+    def bonding(self):
+        return self.contract.w3.eth.contract(
+            address=self.contract.BONDING_CONTRACT_ADDR,
+            abi=self.contract.abi_bonding_manager)
+
+    def test_contract_call_is_sent_with_zero_tip(self):
+        provider = self.canned()
+        receipt = self.contract.sendTx(0, self.bonding().functions.reward())
+        self.assertEqual(receipt["status"], 1)
+        self.assertEqual(len(provider.sent), 1)
+        from eth_account.typed_transactions import TypedTransaction
+        from hexbytes import HexBytes
+        tx = TypedTransaction.from_bytes(HexBytes(provider.sent[0])).as_dict()
+        self.assertEqual(tx["maxPriorityFeePerGas"], 0)
+        self.assertEqual(tx["maxFeePerGas"], 2 * LIVE_BASE_FEE)
+
+    def test_plain_transaction_dict_is_sent(self):
+        provider = self.canned()
+        self.contract.sendTx(0, {"to": SYNTHETIC_FROM, "value": 1, "gas": 21000, "chainId": 42161})
+        self.assertEqual(len(provider.sent), 1)
+
+    def test_reverted_receipt_raises(self):
+        self.canned(receipt_status=0)
+        with self.assertRaises(Exception) as ctx:
+            self.contract.sendTx(0, self.bonding().functions.reward())
+        self.assertIn("reverted", str(ctx.exception))
 
 
 if __name__ == "__main__":
