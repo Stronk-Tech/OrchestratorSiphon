@@ -546,7 +546,7 @@ def refreshRewardRound(idx):
         State.orchestrators[idx].previous_round_refresh = datetime.now(timezone.utc).timestamp()
         Util.log("Latest reward round for {0} is {1}".format(State.orchestrators[idx].source_address, State.orchestrators[idx].previous_reward_round), 2)
     except Exception as e:
-        Util.log("Unable to refresh round lock status: {0}".format(e), 1)
+        Util.log("Unable to refresh last reward round: {0}".format(e), 1)
 
 
 ### Orch LPT logic
