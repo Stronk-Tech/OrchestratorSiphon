@@ -61,33 +61,39 @@ poll_abi = getABI(State.SIPHON_ROOT + "/contracts/Poll.json")
 # connect to L2 rpc provider
 provider = web3.HTTPProvider(State.L2_RPC_PROVIDER)
 w3 = web3.Web3(provider)
-
-
-# Arbitrum base fee sits on a ~0.02 gwei floor and the sequencer is first-come-first-served, so a tip
-# buys nothing. Price every tx off the live base fee: 2x headroom so a mild spike between build and
-# inclusion can't strand it, hard cap so we never pay more than the original 1 gwei settings.
-GAS_HEADROOM = 2
-GAS_CAP_WEI = 1000000000
-GAS_FALLBACK_WEI = 100000000
-
-def gasParams():
-    try:
-        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
-        max_fee = min(base_fee * GAS_HEADROOM, GAS_CAP_WEI)
-        if base_fee >= GAS_CAP_WEI:
-            Util.log("Base fee {0:.4f} gwei is at/above cap {1:.4f} gwei, tx may wait for inclusion".format(base_fee / 1e9, GAS_CAP_WEI / 1e9), 2)
-        else:
-            Util.log("Base fee {0:.4f} gwei, using maxFeePerGas {1:.4f} gwei, no tip".format(base_fee / 1e9, max_fee / 1e9), 2)
-    except Exception as e:
-        max_fee = GAS_FALLBACK_WEI
-        Util.log("Unable to read base fee, using fallback {0:.4f} gwei: {1}".format(max_fee / 1e9, e), 2)
-    return {'maxFeePerGas': max_fee, 'maxPriorityFeePerGas': 0}
 assert w3.is_connected()
 # prepare contracts
 bonding_contract = w3.eth.contract(address=BONDING_CONTRACT_ADDR, abi=abi_bonding_manager)
 rounds_contract = w3.eth.contract(address=ROUNDS_CONTRACT_ADDR, abi=abi_rounds_manager)
 treasury_contract = w3.eth.contract(address=GOVERNOR_CONTRACT_ADDR, abi=treasury_manager)
 poll_creator_contract = w3.eth.contract(address=POLL_CREATOR_ADDR, abi=poll_creator_abi)
+
+
+### Transaction fees
+
+
+# Since Arbitrum switched to Priority Gas Auctions the priority fee (tip) gets charged on top of the base fee,
+# while a tip only buys earlier ordering within a block, which none of our txs need. So we never tip and
+# price every tx off the live base fee, with some headroom for fluctuations and a hard cap
+GAS_HEADROOM_PERMILLE = int(round(State.GAS_HEADROOM * 1000))
+GAS_CAP_WEI = int(round(State.GAS_MAX_FEE_GWEI * 1000000000))
+GAS_FALLBACK_WEI = 100000000
+
+"""
+@brief Returns the EIP-1559 fee fields for a new transaction, based on the live base fee
+"""
+def gasParams():
+    try:
+        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+        max_fee = min(base_fee * GAS_HEADROOM_PERMILLE // 1000, GAS_CAP_WEI)
+        if base_fee >= GAS_CAP_WEI:
+            Util.log("Base fee {0:.4f} gwei is at/above the cap of {1:.4f} gwei, tx will likely be rejected until the base fee drops".format(base_fee / 1e9, GAS_CAP_WEI / 1e9), 1)
+        else:
+            Util.log("Base fee {0:.4f} gwei, using maxFeePerGas {1:.4f} gwei, no tip".format(base_fee / 1e9, max_fee / 1e9), 2)
+    except Exception as e:
+        max_fee = min(GAS_FALLBACK_WEI, GAS_CAP_WEI)
+        Util.log("Unable to read base fee, using fallback {0:.4f} gwei: {1}".format(max_fee / 1e9, e), 1)
+    return {'maxFeePerGas': max_fee, 'maxPriorityFeePerGas': 0}
 
 
 ### Governance & Treasury logic

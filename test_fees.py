@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Fee regression: explicit zero tip with a live-base-derived cap.
+"""
+Offline tests for gasParams(): zero priority tip, maxFeePerGas derived from the live base fee,
+the configured cap and the fallback when the base fee can't be read.
 
-Under Arbitrum PGA ordering priority tips are collected, so the former
-hardcoded 1 gwei tip was charged on every transaction while a zero tip
-is still included via the protocol ordering boost. gasParams()
-reads the latest block base fee on every call, so retries recompute
-instead of reusing stale fees.
-
-No signing, no broadcasts, no network: chain answers are canned
-locally, including an adversarial 1 gwei eth_maxPriorityFeePerGas that
-must never leak into built transactions. Synthetic addresses only.
+No signing, no broadcasts, no network: chain answers are canned locally, including a 1 gwei
+eth_maxPriorityFeePerGas suggestion that must never leak into built transactions.
+Run with: python3 -m unittest test_fees
 """
 import pathlib
 import unittest
@@ -27,11 +23,12 @@ HIST_BASE_FEE = 20_016_000
 
 
 class CannedArbitrum(BaseProvider):
-    def __init__(self, base_fees, priority_hint=1_000_000_000):
+    def __init__(self, base_fees, priority_hint=1_000_000_000, fail_blocks=False):
         super().__init__()
         self.base_fees = list(base_fees)
         self.calls = []
         self.priority_hint = priority_hint
+        self.fail_blocks = fail_blocks
 
     def is_connected(self, show_traceback=False):
         return True
@@ -41,6 +38,8 @@ class CannedArbitrum(BaseProvider):
         if method == "eth_chainId":
             return {"jsonrpc": "2.0", "id": 1, "result": "0xa4b1"}
         if method == "eth_getBlockByNumber":
+            if self.fail_blocks:
+                return {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "rate limited"}}
             base = (self.base_fees.pop(0) if len(self.base_fees) > 1
                     else self.base_fees[0])
             return {"jsonrpc": "2.0", "id": 1, "result": {
@@ -72,78 +71,105 @@ def load_contract_module():
     return contract
 
 
-class FeeTests(unittest.TestCase):
+class GasTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.contract = load_contract_module()
-        import json
-        abi = json.loads(
-            (ROOT / "contracts" / "BondingManager.json").read_text())["abi"]
-        cls.abi = abi
-        cls.bonding = cls.contract.BONDING_CONTRACT_ADDR
+        cls.orig_w3 = cls.contract.w3
+        cls.orig_cap = cls.contract.GAS_CAP_WEI
+        cls.orig_headroom = cls.contract.GAS_HEADROOM_PERMILLE
 
-    def canned(self, bases):
-        provider = CannedArbitrum(bases)
+    def setUp(self):
+        # Pin the defaults so the tests don't depend on the local config.ini
+        self.contract.GAS_CAP_WEI = 2_000_000_000
+        self.contract.GAS_HEADROOM_PERMILLE = 2000
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.contract.w3 = cls.orig_w3
+        cls.contract.GAS_CAP_WEI = cls.orig_cap
+        cls.contract.GAS_HEADROOM_PERMILLE = cls.orig_headroom
+
+    def canned(self, bases, **kwargs):
+        provider = CannedArbitrum(bases, **kwargs)
         self.contract.w3 = Web3(provider)
         return provider
 
-    def test_zero_tip_is_explicit_int_not_falsy_fallback(self):
+    def test_zero_tip_is_explicit_int(self):
         self.canned([LIVE_BASE_FEE])
         fees = self.contract.gasParams()
         self.assertIn("maxPriorityFeePerGas", fees)
         self.assertIs(type(fees["maxPriorityFeePerGas"]), int)
         self.assertEqual(fees["maxPriorityFeePerGas"], 0)
 
-    def test_cap_is_twice_live_base_exact_int(self):
+    def test_max_fee_is_headroom_times_live_base(self):
         for base in (LIVE_BASE_FEE, HIST_BASE_FEE, 1):
             self.canned([base])
             fees = self.contract.gasParams()
             self.assertIs(type(fees["maxFeePerGas"]), int)
             self.assertEqual(fees["maxFeePerGas"], 2 * base)
 
-    def test_fees_refresh_between_retries(self):
+    def test_fractional_headroom_is_exact_int(self):
+        self.contract.GAS_HEADROOM_PERMILLE = 1500
+        self.canned([LIVE_BASE_FEE + 1])
+        fees = self.contract.gasParams()
+        self.assertEqual(fees["maxFeePerGas"], (LIVE_BASE_FEE + 1) * 3 // 2)
+
+    def test_max_fee_is_capped(self):
+        # Base fee spike: 2x base would exceed the cap, so the cap wins
+        self.canned([1_500_000_000])
+        self.assertEqual(self.contract.gasParams()["maxFeePerGas"], 2_000_000_000)
+        # Base fee above the cap: still never more than the cap
+        self.canned([5_000_000_000])
+        fees = self.contract.gasParams()
+        self.assertEqual(fees["maxFeePerGas"], 2_000_000_000)
+        self.assertEqual(fees["maxPriorityFeePerGas"], 0)
+
+    def test_fallback_when_base_fee_unreadable(self):
+        self.canned([LIVE_BASE_FEE], fail_blocks=True)
+        fees = self.contract.gasParams()
+        self.assertEqual(fees["maxFeePerGas"], self.contract.GAS_FALLBACK_WEI)
+        self.assertEqual(fees["maxPriorityFeePerGas"], 0)
+
+    def test_fees_refresh_between_calls(self):
         self.canned([HIST_BASE_FEE, LIVE_BASE_FEE + 3])
         first = self.contract.gasParams()
         second = self.contract.gasParams()
         self.assertEqual(first["maxFeePerGas"], 2 * HIST_BASE_FEE)
         self.assertEqual(second["maxFeePerGas"], 2 * (LIVE_BASE_FEE + 3))
-        self.assertNotEqual(first["maxFeePerGas"], second["maxFeePerGas"])
         self.assertEqual(second["maxPriorityFeePerGas"], 0)
 
     def test_big_int_base_fee_exactness(self):
-        # Lift the fee cap so the exact multiplication is visible
         self.contract.GAS_CAP_WEI = 2 ** 64
-        self.addCleanup(setattr, self.contract, "GAS_CAP_WEI", 1000000000)
         for base in (2 ** 53 + 1, 2 ** 60 + 7):
             self.canned([base])
             fees = self.contract.gasParams()
             self.assertEqual(fees["maxFeePerGas"], 2 * base)
             self.assertEqual(fees["maxPriorityFeePerGas"], 0)
 
-    def test_reward_build_uses_helper_fees_no_legacy_fields(self):
+    def test_reward_build_uses_gas_params_no_legacy_fields(self):
         provider = self.canned([LIVE_BASE_FEE])
-        w3 = Web3(provider)
-        bonding = w3.eth.contract(address=self.bonding, abi=self.abi)
-        fees = self.contract.gasParams()
-        calls_before = list(provider.calls)
+        bonding = self.contract.w3.eth.contract(
+            address=self.contract.BONDING_CONTRACT_ADDR,
+            abi=self.contract.abi_bonding_manager)
         tx = bonding.functions.reward().build_transaction({
             "from": SYNTHETIC_FROM,
             "nonce": 66,
-            **fees,
+            **self.contract.gasParams(),
         })
         self.assertEqual(tx["maxPriorityFeePerGas"], 0)
-        self.assertIs(type(tx["maxPriorityFeePerGas"]), int)
         self.assertEqual(int(tx["maxFeePerGas"]), 2 * LIVE_BASE_FEE)
         self.assertNotIn("gasPrice", tx)
-        for method in provider.calls[len(calls_before):]:
+        self.assertNotIn("eth_maxPriorityFeePerGas", provider.calls)
+        for method in provider.calls:
             self.assertFalse(method.startswith("eth_send"), method)
             self.assertNotIn(method, ("eth_sign", "eth_signTransaction"))
 
-    def test_no_hardcoded_fees_remain_at_tx_sites(self):
+    def test_no_hardcoded_fees_at_tx_sites(self):
         text = (ROOT / "lib" / "Contract.py").read_text()
         self.assertNotIn("'maxFeePerGas': 2000000000", text)
         self.assertNotIn("'maxPriorityFeePerGas': 1000000000", text)
-        self.assertEqual(text.count("**gasParams()"), 8)
+        self.assertEqual(text.count("maxPriorityFeePerGas"), 1)
 
 
 if __name__ == "__main__":

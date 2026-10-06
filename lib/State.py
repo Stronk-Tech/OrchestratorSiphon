@@ -76,6 +76,9 @@ WAIT_TIME_ROUND_REFRESH = float(os.getenv('SIPHON_CACHE_ROUNDS', config['timers'
 WAIT_TIME_LPT_REFRESH = float(os.getenv('SIPHNO_CACHE_LPT', config['timers']['cache_pending_lpt']))
 WAIT_TIME_ETH_REFRESH = float(os.getenv('SIPHNO_CACHE_ETH', config['timers']['cache_pending_eth']))
 WAIT_TIME_IDLE = float(os.getenv('SIPHNO_WAIT_IDLE', config['timers']['wait_idle']))
+# Gas
+GAS_MAX_FEE_GWEI = float(os.getenv('SIPHON_GAS_MAX_FEE', config.get('gas', 'max_fee_gwei', fallback='2')))
+GAS_HEADROOM = float(os.getenv('SIPHON_GAS_HEADROOM', config.get('gas', 'headroom', fallback='2')))
 # RPC
 L2_RPC_PROVIDER = os.getenv('SIPHON_RPC_L2', config['rpc']['l2'])
 # Other
