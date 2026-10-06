@@ -79,6 +79,9 @@ WAIT_TIME_IDLE = float(os.getenv('SIPHNO_WAIT_IDLE', config['timers']['wait_idle
 # Gas
 GAS_MAX_FEE_GWEI = float(os.getenv('SIPHON_GAS_MAX_FEE', config.get('gas', 'max_fee_gwei', fallback='2')))
 GAS_HEADROOM = float(os.getenv('SIPHON_GAS_HEADROOM', config.get('gas', 'headroom', fallback='2')))
+# Hints
+HINT_SOURCE = os.getenv('SIPHON_HINT_SOURCE', config.get('hints', 'source', fallback='cloudspe')).strip().lower()
+HINT_API_URL = os.getenv('SIPHON_HINT_API', config.get('hints', 'api_url', fallback='https://livepeer-network-api.cloudspe.com/api/v1/orchestrators'))
 # RPC
 L2_RPC_PROVIDER = os.getenv('SIPHON_RPC_L2', config['rpc']['l2'])
 # Other

@@ -14,6 +14,8 @@ Make sure to modify the config to : ```nano OrchestratorSiphon/config.ini```
 > ℹ️ You can also pass any config variable as an environment variable instead. These always take precedence over whatever is in the config.
 > You can set an environment variable with `export CONFIGOPTION='VALUE'` on Linux and `set CONFIGOPTION=VALUE` on Windows. The config file shows the names of all corresponding environment variables.
 
+> ℹ️ Besides your RPC provider, the program fetches the list of active Orchestrators from the [Cloud SPE](https://github.com/Cloud-SPE) API once per round, to calculate gas-saving hints for `reward` and `transferBond`. Nothing about your keystore or wallets is sent. Set `source = onchain` (or `off`) in the `[hints]` section to only use your RPC provider.
+
 ## Dependencies
 
 Choose the install path that matches your host. If you ever see the warning 

@@ -8,7 +8,7 @@ import re #< Parse proposal description
 import time #< For rate limiting in chunked queries
 from decimal import Decimal #< Exact conversion of configured LPT/ETH amounts to wei
 # Import our own libraries
-from lib import Util, State
+from lib import Util, State, Hints
 
 
 BONDING_CONTRACT_ADDR = '0x35Bcf3c30594191d53231E4FF333E8A770453e40'
@@ -68,6 +68,11 @@ bonding_contract = w3.eth.contract(address=BONDING_CONTRACT_ADDR, abi=abi_bondin
 rounds_contract = w3.eth.contract(address=ROUNDS_CONTRACT_ADDR, abi=abi_rounds_manager)
 treasury_contract = w3.eth.contract(address=GOVERNOR_CONTRACT_ADDR, abi=treasury_manager)
 poll_creator_contract = w3.eth.contract(address=POLL_CREATOR_ADDR, abi=poll_creator_abi)
+# Only used to estimate rewards when calculating hints
+controller_abi = [{"name": "getContract", "type": "function", "stateMutability": "view",
+    "inputs": [{"name": "_id", "type": "bytes32"}], "outputs": [{"name": "", "type": "address"}]}]
+minter_abi = [{"name": "currentMintableTokens", "type": "function", "stateMutability": "view",
+    "inputs": [], "outputs": [{"name": "", "type": "uint256"}]}]
 
 
 ### Transaction fees
@@ -444,6 +449,60 @@ def doCastPollVote(idx, pollAddress, choiceId):
         Util.log("Unable to vote on poll: '{0}'".format(e), 1)
 
 
+### Transcoder pool hints
+
+
+# Gives Hints read access to the transcoder pool
+class PoolChain:
+    def current_round(self):
+        return rounds_contract.functions.currentRound().call()
+    def max_size(self):
+        return bonding_contract.functions.getTranscoderPoolMaxSize().call()
+    def first(self):
+        return bonding_contract.functions.getFirstTranscoderInPool().call()
+    def next(self, address):
+        return bonding_contract.functions.getNextTranscoderInPool(web3.Web3.to_checksum_address(address)).call()
+    def stake(self, address):
+        return bonding_contract.functions.transcoderTotalStake(web3.Web3.to_checksum_address(address)).call()
+
+pool_chain = PoolChain()
+
+"""
+@brief Estimates the LPT the Orch's stake grows by when calling reward, mirroring BondingManager._rewardWithHint
+@param idx: which Orch # in the set to check
+@return estimated reward in wei, or 0 if it cannot be estimated
+@note Only used for hints, which still work when slightly off: the contract searches from the hinted position
+"""
+def estimateReward(idx):
+    try:
+        address = State.orchestrators[idx].source_checksum_address
+        current_round = rounds_contract.functions.currentRound().call()
+        # getTranscoder returns lastActiveStakeUpdateRound at index 3
+        last_update_round = bonding_contract.functions.getTranscoder(address).call()[3]
+        stake_round = current_round if last_update_round >= current_round else last_update_round
+        # getTranscoderEarningsPoolForRound returns totalStake at index 0
+        orch_stake = bonding_contract.functions.getTranscoderEarningsPoolForRound(address, stake_round).call()[0]
+        total_stake = bonding_contract.functions.currentRoundTotalActiveStake().call()
+        controller = w3.eth.contract(address=bonding_contract.functions.controller().call(), abi=controller_abi)
+        minter = w3.eth.contract(address=controller.functions.getContract(web3.Web3.keccak(text="Minter")).call(), abi=minter_abi)
+        mintable = minter.functions.currentMintableTokens().call()
+        if total_stake == 0:
+            return 0
+        reward = mintable * orch_stake // total_stake
+        # Treasury cut uses PreciseMathUtils, with 100% = 10^27
+        treasury_cut = bonding_contract.functions.treasuryRewardCutRate().call()
+        return reward - reward * treasury_cut // 10**27
+    except Exception as e:
+        Util.log("Unable to estimate reward for hints, assuming 0: {0}".format(e), 2)
+        return 0
+
+"""
+@brief Converts hints to checksummed addresses for a contract call
+"""
+def checksumHints(hints):
+    return [web3.Web3.to_checksum_address(address) for pair in hints for address in pair]
+
+
 ### Round refresh logic
 
 
@@ -576,10 +635,18 @@ def doTransferBond(idx):
         if not canTransferBondToReceiver(idx):
             return
         Util.log("Going to transfer {0} LPTU bond to {1}".format(transfer_amount, State.orchestrators[idx].receiver_address_LPT), 2)
+        # transferBond first unbonds from the Orch, then rebonds to the receiver's Orchestrator, which is the Orch itself
+        # if the receiver is not delegated yet
+        receiver_info = bonding_contract.functions.getDelegator(State.orchestrators[idx].receiver_checksum_address_LPT).call()
+        receiver_delegate = receiver_info[2]
+        if receiver_delegate == web3.constants.ADDRESS_ZERO and receiver_info[0] == 0:
+            receiver_delegate = State.orchestrators[idx].source_checksum_address
+        hints = Hints.calculateHints(pool_chain, [(State.orchestrators[idx].source_checksum_address, -transfer_amount), (receiver_delegate, transfer_amount)])
+        if hints is None:
+            hints = [(web3.constants.ADDRESS_ZERO, web3.constants.ADDRESS_ZERO)] * 2
         # Build, sign and send the transaction, then wait for it to be confirmed
         sendTx(idx, bonding_contract.functions.transferBond(State.orchestrators[idx].receiver_checksum_address_LPT, transfer_amount,
-            web3.constants.ADDRESS_ZERO, web3.constants.ADDRESS_ZERO, web3.constants.ADDRESS_ZERO,
-            web3.constants.ADDRESS_ZERO))
+            *checksumHints(hints)))
         Util.log('Transfer bond success.', 2)
     except Exception as e:
         Util.log("Unable to transfer bond: {0}".format(e), 1)
@@ -591,8 +658,12 @@ def doTransferBond(idx):
 def doCallReward(idx):
     try:
         Util.log("Calling reward for {0}".format(State.orchestrators[idx].source_address), 2)
+        hints = Hints.calculateHints(pool_chain, [(State.orchestrators[idx].source_checksum_address, estimateReward(idx))])
         # Build, sign and send the transaction, then wait for it to be confirmed
-        sendTx(idx, bonding_contract.functions.reward())
+        if hints is None:
+            sendTx(idx, bonding_contract.functions.reward())
+        else:
+            sendTx(idx, bonding_contract.functions.rewardWithHint(*checksumHints(hints)))
         Util.log('Call to reward success.', 2)
     except Exception as e:
         Util.log("Unable to call reward: {0}".format(e), 1)
