@@ -119,32 +119,41 @@ def refreshState():
     for i in range(len(State.orchestrators)):
         Util.log("Refreshing Orchestrator '{0}'".format(State.orchestrators[i].source_address), 2)
 
-        # First check pending LPT
+        # First check if we need to call reward. This happens before moving any stake or fees, since those txs claim the
+        # Orch's earnings, after which rewards from the same round can only be moved in the next round
+        if State.orchestrators[i].previous_reward_round >= State.current_round_num:
+            Util.log("'{0}' has already called reward this round".format(State.orchestrators[i].source_address), 3)
+        else:
+            # Refresh Orch reward round
+            if current_time < State.orchestrators[i].previous_round_refresh + State.WAIT_TIME_ROUND_REFRESH:
+                Util.log("(cached) {0}'s last reward round is {1}. Refreshing in {2:.0f} seconds...".format(State.orchestrators[i].source_address, State.orchestrators[i].previous_reward_round, State.WAIT_TIME_ROUND_REFRESH - (current_time - State.orchestrators[i].previous_round_refresh)), 3)
+            else:
+                Contract.refreshRewardRound(i)
+
+            # Call reward
+            if State.orchestrators[i].previous_reward_round < State.current_round_num:
+                Util.log("Calling reward for {0}...".format(State.orchestrators[i].source_address), 2)
+                Contract.doCallReward(i)
+                Contract.refreshRewardRound(i)
+                Contract.refreshStake(i)
+            else:
+                Util.log("{0} has already called reward in round {1}".format(State.orchestrators[i].source_address, State.current_round_num), 3)
+
+        # Then check pending LPT
         if current_time < State.orchestrators[i].previous_LPT_refresh + State.WAIT_TIME_LPT_REFRESH:
             Util.log("(cached) {0}'s pending stake is {1:.2f} LPT. Refreshing in {2:.0f} seconds...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_LPT_pending, State.WAIT_TIME_LPT_REFRESH - (current_time - State.orchestrators[i].previous_LPT_refresh)), 3)
         else:
             Contract.refreshStake(i)
 
-        # Transfer pending LPT at the end of round if threshold is reached
+        # Transfer pending LPT if threshold is reached
         if State.orchestrators[i].balance_LPT_pending < State.LPT_THRESHOLD:
             Util.log("{0} has {1:.2f} LPT in pending stake < threshold of {2:.2f} LPT".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_LPT_pending, State.LPT_THRESHOLD), 3)
+        elif State.LPT_MINVAL > State.orchestrators[i].balance_LPT_pending:
+            Util.log("Cannot transfer LPT, as the minimum value to leave behind is larger than the self-stake", 1)
         else:
             Util.log("{0} has {1:.2f} LPT pending stake > threshold of {2:.2f} LPT".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_LPT_pending, State.LPT_THRESHOLD), 2)
-            if State.LPT_MINVAL > State.orchestrators[i].balance_LPT_pending:
-                Util.log("Cannot transfer LPT, as the minimum value to leave behind is larger than the self-stake", 1)
-            else:
-                # Never trust cached round/lock state for a transfer: the stake threshold is usually
-                # crossed *because* reward() landed in a new round, so refresh both live before acting
-                round_before = State.current_round_num
-                Contract.refreshRound()
-                Contract.refreshLock()
-                if State.current_round_num != round_before:
-                    Util.log("Round advanced from {0} to {1} since last check, not transferring bond this tick".format(round_before, State.current_round_num), 2)
-                elif State.current_round_is_locked:
-                    Contract.doTransferBond(i)
-                    Contract.refreshStake(i)
-                else:
-                    Util.log("Waiting for round to be locked before transferring bond", 2)
+            Contract.doTransferBond(i)
+            Contract.refreshStake(i)
 
         # Then check pending ETH balance
         if current_time < State.orchestrators[i].previous_ETH_refresh + State.WAIT_TIME_ETH_REFRESH:
@@ -153,21 +162,15 @@ def refreshState():
             Contract.refreshFees(i)
             Contract.checkEthBalance(i)
 
-        # Withdraw pending ETH if threshold is reached 
+        # Withdraw pending ETH if threshold is reached
+        # Note that balance_ETH_pending only counts fees which can be withdrawn right now, see Contract.getClaimable
         if State.orchestrators[i].balance_ETH_pending < State.ETH_THRESHOLD:
             Util.log("{0} has {1:.4f} ETH in pending fees < threshold of {2:.4f} ETH".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 3)
         else:
-            # pendingFees() includes commission earned in the current round, but BondingManager only lets
-            # you withdraw fees up to lastClaimRound. If we've already claimed this round (reward() or a
-            # previous withdraw did it), the remainder isn't withdrawable until the next round - don't spam.
-            last_claim_round = Contract.getLastClaimRound(i)
-            if last_claim_round is not None and last_claim_round >= State.current_round_num:
-                Util.log("{0} has {1:.4f} ETH pending fees > threshold, but already claimed in round {2}; withdrawable from round {3}".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, last_claim_round, last_claim_round + 1), 2)
-            else:
-                Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, withdrawing fees...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 2)
-                Contract.doWithdrawFees(i)
-                Contract.refreshFees(i)
-                Contract.checkEthBalance(i)
+            Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, withdrawing fees...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH_pending, State.ETH_THRESHOLD), 2)
+            Contract.doWithdrawFees(i)
+            Contract.refreshFees(i)
+            Contract.checkEthBalance(i)
 
         # Transfer ETH to receiver if threshold is reached
         if State.orchestrators[i].balance_ETH < State.ETH_THRESHOLD:
@@ -178,28 +181,6 @@ def refreshState():
             Util.log("{0} has {1:.4f} in ETH pending fees > threshold of {2:.4f} ETH, sending some to {3}...".format(State.orchestrators[i].source_address, State.orchestrators[i].balance_ETH, State.ETH_THRESHOLD, State.orchestrators[i].target_address_ETH), 2)
             Contract.doSendFees(i)
             Contract.checkEthBalance(i)
-
-        # Lastly: check if we need to call reward
-        
-        # We can continue immediately if the latest round has not changed
-        if State.orchestrators[i].previous_reward_round >= State.current_round_num:
-            Util.log("Done for '{0}' as they have already called reward this round".format(State.orchestrators[i].source_address), 3)
-            continue
-
-        # Refresh Orch reward round
-        if current_time < State.orchestrators[i].previous_round_refresh + State.WAIT_TIME_ROUND_REFRESH:
-            Util.log("(cached) {0}'s last reward round is {1}. Refreshing in {2:.0f} seconds...".format(State.orchestrators[i].source_address, State.orchestrators[i].previous_reward_round, State.WAIT_TIME_ROUND_REFRESH - (current_time - State.orchestrators[i].previous_round_refresh)), 3)
-        else:
-            Contract.refreshRewardRound(i)
-
-        # Call reward
-        if State.orchestrators[i].previous_reward_round < State.current_round_num:
-            Util.log("Calling reward for {0}...".format(State.orchestrators[i].source_address), 2)
-            Contract.doCallReward(i)
-            Contract.refreshRewardRound(i)
-            Contract.refreshStake(i)
-        else:
-            Util.log("{0} has already called reward in round {1}".format(State.orchestrators[i].source_address, State.current_round_num), 3)
 
 
 # Now we have everything set up, endlessly loop

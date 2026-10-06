@@ -6,6 +6,7 @@ import sys #< To exit the program
 import json #< Parse JSON ABI file
 import re #< Parse proposal description
 import time #< For rate limiting in chunked queries
+from decimal import Decimal #< Exact conversion of configured LPT/ETH amounts to wei
 # Import our own libraries
 from lib import Util, State
 
@@ -493,18 +494,73 @@ def refreshRewardRound(idx):
 
 
 """
+@brief Converts a configured LPT or ETH amount to wei without floating point errors
+@param value: amount in LPT or ETH
+"""
+def toWei(value):
+    return web3.Web3.to_wei(Decimal(str(value)), 'ether')
+
+"""
+@brief Returns how much stake and fees the Orch can move right now, in wei
+@param idx: which Orch # in the set to check
+@return dict with 'stake' and 'fees' which can be moved right now, plus 'pending_stake' and 'pending_fees' as reported by
+        pendingStake and pendingFees. Raises an exception on RPC errors
+@note pendingStake and pendingFees always include the rewards and fees the Orch earned in the current round. Earnings are
+      only claimed once per round though (by the first transferBond or withdrawFees of that round), so anything earned after
+      that claim cannot be moved until the next round
+"""
+def getClaimable(idx):
+    address = State.orchestrators[idx].source_checksum_address
+    current_round = rounds_contract.functions.currentRound().call()
+    # getDelegator returns [bondedAmount, fees, delegateAddress, delegatedAmount, startRound, lastClaimRound, nextUnbondingLockId]
+    delegator = bonding_contract.functions.getDelegator(address).call()
+    pending_stake = bonding_contract.functions.pendingStake(address, current_round).call()
+    pending_fees = bonding_contract.functions.pendingFees(address, current_round).call()
+    if delegator[5] < current_round:
+        # The next transferBond or withdrawFees claims everything up to and including the current round
+        return {'stake': pending_stake, 'fees': pending_fees, 'pending_stake': pending_stake, 'pending_fees': pending_fees}
+    # Already claimed this round: only what has been claimed into the delegator can be moved
+    return {'stake': delegator[0], 'fees': delegator[1], 'pending_stake': pending_stake, 'pending_fees': pending_fees}
+
+"""
 @brief Refresh Delegator amount of LPT available for withdrawal
 @param idx: which Orch # in the set to check
 """
 def refreshStake(idx):
     try:
-        pending_lptu = bonding_contract.functions.pendingStake(State.orchestrators[idx].source_checksum_address, 99999).call()
-        pending_lpt = web3.Web3.from_wei(pending_lptu, 'ether')
-        State.orchestrators[idx].balance_LPT_pending = pending_lpt
+        claimable = getClaimable(idx)
+        available_lpt = web3.Web3.from_wei(claimable['stake'], 'ether')
+        State.orchestrators[idx].balance_LPT_pending = available_lpt
         State.orchestrators[idx].previous_LPT_refresh = datetime.now(timezone.utc).timestamp()
-        Util.log("{0} currently has {1:.2f} LPT available for unstaking".format(State.orchestrators[idx].source_address, pending_lpt), 2)
+        Util.log("{0} currently has {1:.2f} LPT available for unstaking".format(State.orchestrators[idx].source_address, available_lpt), 2)
+        if claimable['pending_stake'] > claimable['stake']:
+            Util.log("{0} earned another {1:.2f} LPT after claiming this round, which becomes available next round".format(State.orchestrators[idx].source_address, web3.Web3.from_wei(claimable['pending_stake'] - claimable['stake'], 'ether')), 2)
     except Exception as e:
         Util.log("Unable to refresh stake: '{0}'".format(e), 1)
+
+"""
+@brief Checks whether transferBond is allowed to claim earnings for the LPT receiver, mirroring BondingManager._authorizeClaimEarnings
+@param idx: which Orch # in the set to check
+@return True if the transfer can go ahead. Raises an exception on RPC errors
+@note transferBond claims the earnings of the receiver too. If the receiver is delegated to an active Orchestrator, that is only
+      allowed once that Orchestrator called reward this round (or the receiver claimed this round), else the tx reverts
+"""
+def canTransferBondToReceiver(idx):
+    receiver = State.orchestrators[idx].receiver_checksum_address_LPT
+    # DelegatorStatus: 0 = Pending, 1 = Bonded, 2 = Unbonded
+    if bonding_contract.functions.delegatorStatus(receiver).call() == 2:
+        return True
+    receiver_info = bonding_contract.functions.getDelegator(receiver).call()
+    delegate = receiver_info[2]
+    if not bonding_contract.functions.isActiveTranscoder(delegate).call():
+        return True
+    current_round = rounds_contract.functions.currentRound().call()
+    if receiver_info[5] == current_round:
+        return True
+    if bonding_contract.functions.getTranscoder(delegate).call()[0] == current_round:
+        return True
+    Util.log("Waiting for {0}, the Orchestrator of LPT receiver {1}, to call reward this round before transferring bond".format(delegate, receiver), 2)
+    return False
 
 """
 @brief Transfers all but LPT_MINVAL LPT stake to the configured destination wallet
@@ -512,7 +568,13 @@ def refreshStake(idx):
 """
 def doTransferBond(idx):
     try:
-        transfer_amount = web3.Web3.to_wei(float(State.orchestrators[idx].balance_LPT_pending) - State.LPT_MINVAL, 'ether')
+        # Use live values rather than the cached balance, since claiming earlier this round changes what can be moved
+        transfer_amount = getClaimable(idx)['stake'] - toWei(State.LPT_MINVAL)
+        if transfer_amount <= 0:
+            Util.log("Not transferring bond, as there is nothing left above the minimum self-stake", 2)
+            return
+        if not canTransferBondToReceiver(idx):
+            return
         Util.log("Going to transfer {0} LPTU bond to {1}".format(transfer_amount, State.orchestrators[idx].receiver_address_LPT), 2)
         # Build, sign and send the transaction, then wait for it to be confirmed
         sendTx(idx, bonding_contract.functions.transferBond(State.orchestrators[idx].receiver_checksum_address_LPT, transfer_amount,
@@ -569,25 +631,15 @@ def doTranscoder(idx, reward_percent_to_keep, fee_percent_to_keep):
 """
 def refreshFees(idx):
     try:
-        pending_wei = bonding_contract.functions.pendingFees(State.orchestrators[idx].source_checksum_address, 99999).call()
-        pending_eth = web3.Web3.from_wei(pending_wei, 'ether')
-        State.orchestrators[idx].balance_ETH_pending = pending_eth
+        claimable = getClaimable(idx)
+        available_eth = web3.Web3.from_wei(claimable['fees'], 'ether')
+        State.orchestrators[idx].balance_ETH_pending = available_eth
         State.orchestrators[idx].previous_ETH_refresh = datetime.now(timezone.utc).timestamp()
-        Util.log("{0} has {1:.6f} ETH in pending fees".format(State.orchestrators[idx].source_address, pending_eth), 2)
+        Util.log("{0} has {1:.6f} ETH in pending fees".format(State.orchestrators[idx].source_address, available_eth), 2)
+        if claimable['pending_fees'] > claimable['fees']:
+            Util.log("{0} earned another {1:.6f} ETH in fees after claiming this round, which becomes withdrawable next round".format(State.orchestrators[idx].source_address, web3.Web3.from_wei(claimable['pending_fees'] - claimable['fees'], 'ether')), 2)
     except Exception as e:
         Util.log("Unable to refresh fees: '{0}'".format(e), 1)
-
-"""
-@brief Returns the delegator's lastClaimRound (fees are only withdrawable up to this round), or None on RPC error
-@param idx: which Orch # in the set to check
-"""
-def getLastClaimRound(idx):
-    try:
-        # getDelegator returns [bondedAmount, fees, delegateAddress, delegatedAmount, startRound, lastClaimRound, nextUnbondingLockId]
-        return bonding_contract.functions.getDelegator(State.orchestrators[idx].source_checksum_address).call()[5]
-    except Exception as e:
-        Util.log("Unable to read lastClaimRound: {0}".format(e), 1)
-        return None
 
 """
 @brief Withdraws all fees to the receiver wallet
@@ -595,8 +647,11 @@ def getLastClaimRound(idx):
 """
 def doWithdrawFees(idx):
     try:
-        # We take a little bit off due to floating point inaccuracies causing tx's to fail
-        transfer_amount = web3.Web3.to_wei(float(State.orchestrators[idx].balance_ETH_pending) - 0.00001, 'ether')
+        # Use live values rather than the cached balance, since claiming earlier this round changes what can be withdrawn
+        transfer_amount = getClaimable(idx)['fees']
+        if transfer_amount <= 0:
+            Util.log("Not withdrawing fees, as there are no withdrawable fees", 2)
+            return
         receiver_address = State.orchestrators[idx].source_checksum_address
         if not State.WITHDRAW_TO_RECEIVER:
             Util.log("Withdrawing {0} WEI to {1}".format(transfer_amount, State.orchestrators[idx].source_address), 2)
@@ -632,7 +687,10 @@ def checkEthBalance(idx):
 """
 def doSendFees(idx):
     try:
-        transfer_amount = web3.Web3.to_wei(float(State.orchestrators[idx].balance_ETH) - State.ETH_MINVAL, 'ether')
+        transfer_amount = w3.eth.get_balance(State.orchestrators[idx].source_checksum_address) - toWei(State.ETH_MINVAL)
+        if transfer_amount <= 0:
+            Util.log("Not sending ETH, as there is nothing left above the minimum balance", 2)
+            return
         Util.log("Should transfer {0} wei to {1}".format(transfer_amount, State.orchestrators[idx].target_checksum_address_ETH), 2)
         # Build, sign and send the transaction, then wait for it to be confirmed
         sendTx(idx, {
