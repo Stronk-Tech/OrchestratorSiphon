@@ -23,9 +23,12 @@ HIST_BASE_FEE = 20_016_000
 
 
 class CannedArbitrum(BaseProvider):
-    def __init__(self, base_fees, priority_hint=1_000_000_000, fail_blocks=False, receipt_status=1):
+    def __init__(self, base_fees, priority_hint=1_000_000_000, fail_blocks=False, receipt_status=1, empty_receipts=0):
         super().__init__()
         self.receipt_status = receipt_status
+        # How many receipt requests get the empty response some RPC providers give for pending transactions
+        self.empty_receipts = empty_receipts
+        self.receipt_requests = 0
         self.sent = []
         self.base_fees = list(base_fees)
         self.calls = []
@@ -65,6 +68,9 @@ class CannedArbitrum(BaseProvider):
             self.sent.append(params[0])
             return {"jsonrpc": "2.0", "id": 1, "result": "0x" + "ee" * 32}
         if method == "eth_getTransactionReceipt":
+            self.receipt_requests += 1
+            if self.receipt_requests <= self.empty_receipts:
+                return {"jsonrpc": "2.0", "id": 470}
             return {"jsonrpc": "2.0", "id": 1, "result": {
                 "transactionHash": "0x" + "ee" * 32,
                 "blockNumber": "0x1e811997",
@@ -246,6 +252,25 @@ class SendTxTests(unittest.TestCase):
         provider = self.canned()
         self.contract.sendTx(0, {"to": SYNTHETIC_FROM, "value": 1, "gas": 21000, "chainId": 42161})
         self.assertEqual(len(provider.sent), 1)
+
+    def test_empty_receipt_responses_are_retried(self):
+        provider = self.canned(empty_receipts=3)
+        with mock.patch.object(self.contract.time, "sleep"):
+            receipt = self.contract.sendTx(0, self.bonding().functions.reward())
+        self.assertEqual(receipt["status"], 1)
+        self.assertEqual(provider.receipt_requests, 4)
+        self.assertEqual(len(provider.sent), 1, "the tx must not be sent again")
+
+    def test_missing_receipt_times_out(self):
+        self.canned(empty_receipts=10**9)
+        clock = [0.0]
+        def fake_sleep(seconds):
+            clock[0] += seconds
+        with mock.patch.object(self.contract.time, "sleep", side_effect=fake_sleep), \
+             mock.patch.object(self.contract.time, "time", side_effect=lambda: clock[0]):
+            with self.assertRaises(Exception) as ctx:
+                self.contract.sendTx(0, self.bonding().functions.reward())
+        self.assertIn("no receipt", str(ctx.exception))
 
     def test_reverted_receipt_raises(self):
         self.canned(receipt_status=0)

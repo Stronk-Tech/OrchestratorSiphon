@@ -101,6 +101,26 @@ def gasParams():
         Util.log("Unable to read base fee, using fallback {0:.4f} gwei: {1}".format(max_fee / 1e9, e), 1)
     return {'maxFeePerGas': max_fee, 'maxPriorityFeePerGas': 0}
 
+RECEIPT_TIMEOUT_SECONDS = 120
+RECEIPT_POLL_SECONDS = 1
+
+"""
+@brief Waits until a transaction is mined and returns its receipt
+@param transaction_hash: hash of the transaction to wait for
+@note Some RPC providers answer with an empty response instead of `null` while a transaction is still pending. web3's
+      wait_for_transaction_receipt fails on that, which made successful transactions look like they failed. So we poll
+      ourselves and treat any error as "not mined yet" until the timeout
+"""
+def waitForReceipt(transaction_hash):
+    deadline = time.time() + RECEIPT_TIMEOUT_SECONDS
+    while True:
+        try:
+            return w3.eth.get_transaction_receipt(transaction_hash)
+        except Exception as e:
+            if time.time() >= deadline:
+                raise Exception("no receipt for transaction {0} after {1} seconds: {2}".format(transaction_hash.hex(), RECEIPT_TIMEOUT_SECONDS, e))
+            time.sleep(RECEIPT_POLL_SECONDS)
+
 """
 @brief Builds, signs and sends a transaction from the Orch, then waits for it to be confirmed
 @param idx: which Orch # in the set sends the transaction
@@ -123,8 +143,8 @@ def sendTx(idx, tx):
     transaction_hash = w3.eth.send_raw_transaction(signed_transaction.raw_transaction)
     Util.log("Initiated transaction with hash {0}".format(transaction_hash.hex()), 2)
     # Wait for transaction to be confirmed
-    receipt = w3.eth.wait_for_transaction_receipt(transaction_hash)
-    # A mined transaction can still have reverted, which wait_for_transaction_receipt does not raise on
+    receipt = waitForReceipt(transaction_hash)
+    # A mined transaction can still have reverted
     if receipt['status'] != 1:
         raise Exception("transaction {0} reverted on-chain".format(transaction_hash.hex()))
     return receipt
