@@ -189,7 +189,7 @@ def calculateHints(chain, moves):
                 previous, following = simulateMove(pool, address, current + change)
                 steps.append((address, previous, following))
             if verifyHints(chain, steps, moved):
-                Util.log("Calculated hints: {0}".format(", ".join("{0} between {1} and {2}".format(*step) for step in steps)), 3)
+                Util.log("Calculated hints: {0}".format(", ".join("{0} between {1} and {2}".format(*step) for step in steps)), 2)
                 return [(previous, following) for _, previous, following in steps]
             if attempt == 0:
                 # The seeded list misses a change in the pool (an Orchestrator joined or left), so get the real list
