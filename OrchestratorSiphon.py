@@ -132,7 +132,6 @@ def refreshState():
 
             # Call reward
             if State.orchestrators[i].previous_reward_round < State.current_round_num:
-                Util.log("Calling reward for {0}...".format(State.orchestrators[i].source_address), 2)
                 Contract.doCallReward(i)
                 Contract.refreshRewardRound(i)
                 Contract.refreshStake(i)
