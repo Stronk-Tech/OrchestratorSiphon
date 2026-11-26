@@ -14,6 +14,8 @@ Make sure to modify the config to : ```nano OrchestratorSiphon/config.ini```
 > ℹ️ You can also pass any config variable as an environment variable instead. These always take precedence over whatever is in the config.
 > You can set an environment variable with `export CONFIGOPTION='VALUE'` on Linux and `set CONFIGOPTION=VALUE` on Windows. The config file shows the names of all corresponding environment variables.
 
+> ⚠️ To transfer stake, the LPT receiver must first authorize your Orchestrator: send `setThirdPartyBonderAuthorization(<source_address>, true)` from `receiver_address_lpt` to the BondingManager (`0x35Bcf3c30594191d53231E4FF333E8A770453e40`). See the [forum post](https://forum.livepeer.org/t/upcoming-breaking-protocol-change-third-party-bonding-will-require-authorization/3401/2).
+
 > ℹ️ Besides your RPC provider, the program fetches the list of active Orchestrators from the [Cloud SPE](https://github.com/Cloud-SPE) API once per round, to calculate gas-saving hints for `reward` and `transferBond`. Nothing about your keystore or wallets is sent. Set `source = onchain` (or `off`) in the `[hints]` section to only use your RPC provider.
 
 ## Dependencies
