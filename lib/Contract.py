@@ -621,11 +621,16 @@ def refreshStake(idx):
 @brief Checks whether transferBond is allowed to claim earnings for the LPT receiver, mirroring BondingManager._authorizeClaimEarnings
 @param idx: which Orch # in the set to check
 @return True if the transfer can go ahead. Raises an exception on RPC errors
-@note transferBond claims the earnings of the receiver too. If the receiver is delegated to an active Orchestrator, that is only
+@note transferBond claims the earnings of the receiver too, so the receiver must first authorize the Orchestrator with
+      setThirdPartyBonderAuthorization. If the receiver is delegated to an active Orchestrator, the claim is then only
       allowed once that Orchestrator called reward this round (or the receiver claimed this round), else the tx reverts
 """
 def canTransferBondToReceiver(idx):
+    source = State.orchestrators[idx].source_checksum_address
     receiver = State.orchestrators[idx].receiver_checksum_address_LPT
+    if receiver != source and not bonding_contract.functions.isThirdPartyBonderAuthorized(receiver, source).call():
+        Util.log("Not transferring bond: LPT receiver {0} has not authorized {1}. Send setThirdPartyBonderAuthorization({1}, true) from {0} to the BondingManager {2}".format(receiver, source, BONDING_CONTRACT_ADDR), 1)
+        return False
     # DelegatorStatus: 0 = Pending, 1 = Bonded, 2 = Unbonded
     if bonding_contract.functions.delegatorStatus(receiver).call() == 2:
         return True
